@@ -1,4 +1,4 @@
-#pip install openai
+pip install openai
 import openai
 
 # OpenAI API 키 입력 (환경변수에 저장하거나 코드에 직접 입력 가능)

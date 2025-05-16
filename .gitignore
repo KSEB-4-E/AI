@@ -1,0 +1,68 @@
+파이썬 컴파일 결과,
+pycache/
+*.py[cod]
+*.so
+*.pyd
+
+#가상환경,
+venv/
+env/
+ENV/
+.venv/
+.ENV/
+*.env
+
+#Jupyter Notebook 체크포인트,
+.ipynb_checkpoints/
+
+#운영체제 별 임시파일,
+.DS_Store
+Thumbs.db
+
+#IDE 관련 (VSCode, PyCharm 등),
+.vscode/
+.idea/
+
+#로그파일,
+*.log
+
+#테스트/캐시,
+.cache/
+*.cover
+*.py,cover
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+
+#빌드 관련,
+build/
+dist/
+*.egg-info/
+.eggs/
+
+#환경설정 파일 (.env는 보안 이슈 있음),
+.env
+.env.
+
+#크롤링이나 데이터 분석 시 저장된 데이터,
+*.sqlite3
+*.db
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.parquet
+*.h5
+*.zip
+*.tar.gz
+*.pkl
+*.json
+*.model
+*.ckpt
+
+#기타 민감한 정보 파일,
+secrets.yaml
+config.yaml
+credentials.json
