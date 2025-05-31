@@ -26,7 +26,7 @@ app.add_middleware(
 # ✅ 1. 추천 키워드 API (요청 시 처리, 30개 기사 기준)
 @app.get("/trending-keywords")
 def get_trending_keywords():
-    df = pd.read_csv("kobart_news_summarized.csv", encoding="utf-8")
+    df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
     texts = (df["title"].fillna("") + " " + df["summary"].fillna("")).tolist()[:30]
     kiwi = Kiwi()
     all_keywords = []
@@ -41,7 +41,7 @@ def get_trending_keywords():
 # ✅ 2. 기사 검색 API
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
-    df = pd.read_csv("kobart_news_summarized.csv", encoding="utf-8")
+    df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
     filtered = df[
         df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
         df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
