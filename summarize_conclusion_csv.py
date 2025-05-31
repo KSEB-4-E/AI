@@ -33,8 +33,6 @@ app.add_middleware(
 )
 
 # ✅ 1. 추천 키워드 API (요청 시 처리, 랜덤으로 30개 기사 뽑기)
-import random
-
 @app.get("/trending-keywords")
 def get_trending_keywords():
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
