@@ -72,28 +72,29 @@ class SummaryRequest(BaseModel):
 def summarize_conclusion(data: SummaryRequest):
     keyword = data.keyword
     contents = data.contents[:3]
+    joined_content = "\n".join(contents)  # ✅ f-string 밖에서 먼저 처리
 
     prompt = f"""
-    다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
+다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
 
-    이 기사들의 공통된 주제를 다음 3가지 항목으로 간결히 정리해줘.
+이 기사들의 공통된 주제를 다음 3가지 항목으로 간결히 정리해줘.
 
-    요약 형식은 다음 JSON 형태 그대로 출력해줘:
+요약 형식은 다음 JSON 형태 그대로 출력해줘:
 
-    {{
-      "fact": "핵심 사실을 요약",
-      "issue": "신문사들의 공통 쟁점 요약",
-      "outlook": "향후 전망 또는 종합 판단 요약"
-    }}
+{{
+  "fact": "핵심 사실을 요약",
+  "issue": "신문사들의 공통 쟁점 요약",
+  "outlook": "향후 전망 또는 종합 판단 요약"
+}}
 
-    조건:
-    - 각 항목은 **1문장**으로 요약
-    - 직접 인용 없이 요점을 명확히 서술
-    - 항목 이름은 반드시 "fact", "issue", "outlook"으로 유지
+조건:
+- 각 항목은 1문장으로 요약
+- 직접 인용 없이 요점을 명확히 서술
+- 항목 이름은 반드시 "fact", "issue", "outlook"으로 유지
 
-    기사 원문:
-    {'\n'.join(contents)}
-    """
+기사 원문:
+{joined_content}
+"""
 
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
@@ -102,13 +103,11 @@ def summarize_conclusion(data: SummaryRequest):
         max_tokens=500
     )
 
-    # 응답을 JSON으로 안전하게 파싱
     content = response.choices[0].message.content.strip()
 
     try:
         summary_json = json.loads(content)
     except json.JSONDecodeError:
-        # fallback 처리: 정규표현식 혹은 디폴트 구조
         summary_json = {
             "fact": "요약 실패",
             "issue": "요약 실패",
