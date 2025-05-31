@@ -2,16 +2,8 @@ services:
   - type: web
     name: news-summary-api
     env: python
-    buildCommand: ""
-    startCommand: uvicorn summarize_conclusion_db:app --host 0.0.0.0 --port 10000
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: uvicorn summarize_conclusion:app --host 0.0.0.0 --port 10000
     envVars:
       - key: OPENAI_API_KEY
         value: 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
-      - key: DB_HOST
-        value: 127.0.0.1
-      - key: DB_USER
-        value: KSEB
-      - key: DB_PASSWORD
-        value: kseb#8981
-      - key: DB_NAME
-        value: newsdb
