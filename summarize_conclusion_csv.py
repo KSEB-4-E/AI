@@ -5,24 +5,16 @@ from typing import List
 from openai import OpenAI
 from dotenv import load_dotenv
 import pandas as pd
-from collections import Counter
 import os
 import json
 import random
-import re
+from summa import keywords as summa_keywords
 
-# uvicorn summarize_conclusion_csv:app --reload
-# 키워드: http://localhost:8000/trending-keywords
-#
-# 본문검색: http://localhost:8000/search-articles?keyword=카카오
-#
-# http://localhost:8000/docs
-
-# ✅ 환경 변수 로딩 및 GPT 초기화
+# 환경 변수 로딩 및 GPT 초기화
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ✅ FastAPI 앱 초기화
+# FastAPI 앱 초기화
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -32,13 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ 간단한 한글 단어 전처리 함수
-def extract_keywords_from_text(text: str) -> List[str]:
-    # 특수문자 제거 + 공백 기준 단어 분리
-    words = re.findall(r"[가-힣]{2,}", text)
-    return words
-
-# ✅ 1. 추천 키워드 API (요청 시 처리, 랜덤 30개 기사)
+# 1. 추천 키워드 API (TextRank 기반)
 @app.get("/trending-keywords")
 def get_trending_keywords():
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
@@ -49,15 +35,19 @@ def get_trending_keywords():
     else:
         sampled_texts = random.sample(combined_texts, 30)
 
-    all_keywords = []
-    for text in sampled_texts:
-        all_keywords += extract_keywords_from_text(text)
+    text = " ".join(sampled_texts)
 
-    most_common = Counter(all_keywords).most_common(5)
-    return {"keywords": [{"keyword": kw, "count": count} for kw, count in most_common]}
+    # ✅ split=True: 단어 리스트만 반환 (점수 없음)
+    extracted = summa_keywords.keywords(text, words=30, split=True)
 
+    # ✅ 두 글자 이상 필터링 & 상위 5개 추출
+    filtered_keywords = [kw for kw in extracted if len(kw) >= 2][:5]
 
-# ✅ 2. 기사 검색 API
+    return {
+        "keywords": [{"keyword": kw} for kw in filtered_keywords]
+    }
+
+# 2. 기사 검색 API
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
@@ -65,20 +55,16 @@ def search_articles(keyword: str = Query(..., min_length=2)):
         df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
         df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
     ].copy()
-
     filtered["row_order"] = filtered.index[::-1]
     latest_by_source = (
         filtered.sort_values("row_order")
         .drop_duplicates(subset=["source"], keep="first")
     )
-
     latest_articles = latest_by_source.sort_values("row_order").head(3)
     articles = latest_articles[["title", "summary", "content", "source", "link"]].to_dict(orient="records")
-
     return {"keyword": keyword, "articles": articles}
 
-
-# ✅ 3. 결론 요약 API
+# 3. 결론 요약 API
 class SummaryRequest(BaseModel):
     keyword: str
     contents: List[str]
@@ -88,7 +74,6 @@ def summarize_conclusion(data: SummaryRequest):
     keyword = data.keyword
     contents = data.contents[:3]
     joined_content = "\n".join(contents)
-
     prompt = f"""
 다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
 
@@ -110,16 +95,13 @@ def summarize_conclusion(data: SummaryRequest):
 기사 원문:
 {joined_content}
 """
-
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.5,
         max_tokens=500
     )
-
     content = response.choices[0].message.content.strip()
-
     try:
         summary_json = json.loads(content)
     except json.JSONDecodeError:
@@ -128,5 +110,11 @@ def summarize_conclusion(data: SummaryRequest):
             "issue": "요약 실패",
             "outlook": "요약 실패"
         }
-
     return {"keyword": keyword, "summary": summary_json}
+
+# uvicorn summarize_conclusion_csv:app --reload
+# 키워드: http://localhost:8000/trending-keywords
+#
+# 본문검색: http://localhost:8000/search-articles?keyword=카카오
+#
+# http://localhost:8000/docs
