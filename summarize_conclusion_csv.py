@@ -5,11 +5,11 @@ from typing import List
 from openai import OpenAI
 from dotenv import load_dotenv
 import pandas as pd
-from kiwipiepy import Kiwi
 from collections import Counter
 import os
 import json
 import random
+from konlpy.tag import Okt  # ✅ konlpy 사용
 
 # uvicorn summarize_conclusion_csv:app --reload
 # 키워드: http://localhost:8000/trending-keywords
@@ -32,48 +32,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ 1. 추천 키워드 API (요청 시 처리, 랜덤으로 30개 기사 뽑기)
+# ✅ 1. 추천 키워드 API (랜덤 30개 기사 기준)
 @app.get("/trending-keywords")
 def get_trending_keywords():
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
 
     # ✅ title + summary 결합 후 결측 제거
     combined_texts = (df["title"].fillna("") + " " + df["summary"].fillna("")).tolist()
-    if len(combined_texts) < 30:
-        sampled_texts = combined_texts  # 전체가 30개 미만이면 전부 사용
-    else:
-        sampled_texts = random.sample(combined_texts, 30)
+    sampled_texts = combined_texts if len(combined_texts) < 30 else random.sample(combined_texts, 30)
 
-    kiwi = Kiwi()
+    # ✅ 형태소 분석
+    okt = Okt()
     all_keywords = []
     for text in sampled_texts:
-        all_keywords += [
-            token.form for token in kiwi.tokenize(text)
-            if token.tag in ["NNG", "NNP"] and len(token.form) > 1
-        ]
+        all_keywords += [noun for noun in okt.nouns(text) if len(noun) > 1]
 
     most_common = Counter(all_keywords).most_common(5)
     return {
         "keywords": [{"keyword": kw, "count": count} for kw, count in most_common]
     }
 
-
-    # ✅ 2. 형태소 분석 및 키워드 집계
-    kiwi = Kiwi()
-    all_keywords = []
-    for text in texts:
-        all_keywords += [
-            token.form for token in kiwi.tokenize(text)
-            if token.tag in ["NNG", "NNP"] and len(token.form) > 1
-        ]
-
-    most_common = Counter(all_keywords).most_common(5)
-    return {"keywords": [{"keyword": kw, "count": count} for kw, count in most_common]}
-
 # ✅ 2. 기사 검색 API
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
+
     filtered = df[
         df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
         df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
@@ -103,7 +86,7 @@ class SummaryRequest(BaseModel):
 def summarize_conclusion(data: SummaryRequest):
     keyword = data.keyword
     contents = data.contents[:3]
-    joined_content = "\n".join(contents)  # ✅ f-string 밖에서 먼저 처리
+    joined_content = "\n".join(contents)
 
     prompt = f"""
 다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
@@ -135,7 +118,6 @@ def summarize_conclusion(data: SummaryRequest):
     )
 
     content = response.choices[0].message.content.strip()
-
     try:
         summary_json = json.loads(content)
     except json.JSONDecodeError:
