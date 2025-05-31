@@ -9,7 +9,6 @@ from kiwipiepy import Kiwi
 from collections import Counter
 import os
 import json
-import random
 
 # ✅ 환경 변수 로딩 및 GPT 초기화
 load_dotenv()
@@ -25,15 +24,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ 1. 추천 키워드 API (요청 시 처리, 30개 기사 기준)
+# ✅ 1. 추천 키워드 API (요청 시 처리, 최신기사 30개 기사 뽑기)
 @app.get("/trending-keywords")
 def get_trending_keywords():
+    # ✅ 최신 기사 50개 (맨 아래부터)
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
+    texts = (df["title"].fillna("") + " " + df["summary"].fillna("")).tolist()[-30:]
 
-    # ✅ 1. 기사 무작위로 섞은 후 상위 30개 사용
-    texts = (df["title"].fillna("") + " " + df["summary"].fillna("")).tolist()
-    random.shuffle(texts)
-    texts = texts[:30]
+    kiwi = Kiwi()
+    all_keywords = []
+    for text in texts:
+        all_keywords += [
+            token.form for token in kiwi.tokenize(text)
+            if token.tag in ["NNG", "NNP"] and len(token.form) > 1
+        ]
+
+    most_common = Counter(all_keywords).most_common(5)
+    return {
+        "keywords": [{"keyword": kw, "count": count} for kw, count in most_common]
+    }
 
     # ✅ 2. 형태소 분석 및 키워드 집계
     kiwi = Kiwi()
