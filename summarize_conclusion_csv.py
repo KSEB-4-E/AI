@@ -58,11 +58,10 @@ def get_trending_keywords():
 # ✅ 2. 기사 검색 API
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
-    # 1. 키워드 기반 필터링 (title/summary/content에서 검색)
+    # 1. 키워드 기반 필터링 (title/summary에서 검색)
     filtered = df[
         df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
-        df["summary"].fillna("").str.contains(keyword, case=False, regex=False) |
-        df["content"].fillna("").str.contains(keyword, case=False, regex=False)
+        df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
     ].copy()
 
     # 2. 최신 기사 우선 → 전체 데이터에서 아래쪽이 최신이므로 reverse index 부여
