@@ -9,6 +9,14 @@ from kiwipiepy import Kiwi
 from collections import Counter
 import os
 import json
+import random
+
+# uvicorn summarize_conclusion_csv:app --reload
+# 키워드: http://localhost:8000/trending-keywords
+#
+# 본문검색: http://localhost:8000/search-articles?keyword=카카오
+#
+# http://localhost:8000/docs
 
 # ✅ 환경 변수 로딩 및 GPT 초기화
 load_dotenv()
@@ -24,16 +32,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ 1. 추천 키워드 API (요청 시 처리, 최신기사 30개 기사 뽑기)
+# ✅ 1. 추천 키워드 API (요청 시 처리, 랜덤으로 30개 기사 뽑기)
+import random
+
 @app.get("/trending-keywords")
 def get_trending_keywords():
-    # ✅ 최신 기사 50개 (맨 아래부터)
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
-    texts = (df["title"].fillna("") + " " + df["summary"].fillna("")).tolist()[-30:]
+
+    # ✅ title + summary 결합 후 결측 제거
+    combined_texts = (df["title"].fillna("") + " " + df["summary"].fillna("")).tolist()
+    if len(combined_texts) < 30:
+        sampled_texts = combined_texts  # 전체가 30개 미만이면 전부 사용
+    else:
+        sampled_texts = random.sample(combined_texts, 30)
 
     kiwi = Kiwi()
     all_keywords = []
-    for text in texts:
+    for text in sampled_texts:
         all_keywords += [
             token.form for token in kiwi.tokenize(text)
             if token.tag in ["NNG", "NNP"] and len(token.form) > 1
@@ -43,6 +58,7 @@ def get_trending_keywords():
     return {
         "keywords": [{"keyword": kw, "count": count} for kw, count in most_common]
     }
+
 
     # ✅ 2. 형태소 분석 및 키워드 집계
     kiwi = Kiwi()
