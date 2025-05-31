@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: news-summary-api
+    name: ai-api
     env: python
-    buildCommand: "pip install -r requirements.txt"
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
     startCommand: uvicorn summarize_conclusion_csv:app --host 0.0.0.0 --port $PORT
-    envVars:
-      - key: OPENAI_API_KEY
-        sync: false
+    autoDeploy: true
