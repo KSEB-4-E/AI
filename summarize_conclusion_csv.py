@@ -9,7 +9,7 @@ from collections import Counter
 import os
 import json
 import random
-from konlpy.tag import Okt  # ✅ konlpy 사용
+import re
 
 # uvicorn summarize_conclusion_csv:app --reload
 # 키워드: http://localhost:8000/trending-keywords
@@ -32,38 +32,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ 1. 추천 키워드 API (랜덤 30개 기사 기준)
+# ✅ 간단한 한글 단어 전처리 함수
+def extract_keywords_from_text(text: str) -> List[str]:
+    # 특수문자 제거 + 공백 기준 단어 분리
+    words = re.findall(r"[가-힣]{2,}", text)
+    return words
+
+# ✅ 1. 추천 키워드 API (요청 시 처리, 랜덤 30개 기사)
 @app.get("/trending-keywords")
 def get_trending_keywords():
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
 
-    # ✅ title + summary 결합 후 결측 제거
     combined_texts = (df["title"].fillna("") + " " + df["summary"].fillna("")).tolist()
-    sampled_texts = combined_texts if len(combined_texts) < 30 else random.sample(combined_texts, 30)
+    if len(combined_texts) < 30:
+        sampled_texts = combined_texts
+    else:
+        sampled_texts = random.sample(combined_texts, 30)
 
-    # ✅ 형태소 분석
-    okt = Okt()
     all_keywords = []
     for text in sampled_texts:
-        all_keywords += [noun for noun in okt.nouns(text) if len(noun) > 1]
+        all_keywords += extract_keywords_from_text(text)
 
     most_common = Counter(all_keywords).most_common(5)
-    return {
-        "keywords": [{"keyword": kw, "count": count} for kw, count in most_common]
-    }
+    return {"keywords": [{"keyword": kw, "count": count} for kw, count in most_common]}
+
 
 # ✅ 2. 기사 검색 API
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
-
     filtered = df[
         df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
         df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
     ].copy()
 
     filtered["row_order"] = filtered.index[::-1]
-
     latest_by_source = (
         filtered.sort_values("row_order")
         .drop_duplicates(subset=["source"], keep="first")
@@ -72,10 +75,8 @@ def search_articles(keyword: str = Query(..., min_length=2)):
     latest_articles = latest_by_source.sort_values("row_order").head(3)
     articles = latest_articles[["title", "summary", "content", "source", "link"]].to_dict(orient="records")
 
-    return {
-        "keyword": keyword,
-        "articles": articles
-    }
+    return {"keyword": keyword, "articles": articles}
+
 
 # ✅ 3. 결론 요약 API
 class SummaryRequest(BaseModel):
@@ -118,6 +119,7 @@ def summarize_conclusion(data: SummaryRequest):
     )
 
     content = response.choices[0].message.content.strip()
+
     try:
         summary_json = json.loads(content)
     except json.JSONDecodeError:
@@ -127,7 +129,4 @@ def summarize_conclusion(data: SummaryRequest):
             "outlook": "요약 실패"
         }
 
-    return {
-        "keyword": keyword,
-        "summary": summary_json
-    }
+    return {"keyword": keyword, "summary": summary_json}
