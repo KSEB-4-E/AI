@@ -71,27 +71,21 @@ class SummaryRequest(BaseModel):
 def summarize_conclusion(data: SummaryRequest):
     keyword = data.keyword
     contents = data.contents[:3]
+    context = "\n".join(contents)
+
     prompt = f"""
-    다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
+다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
 
-    다음 세 항목에 따라 전체 이슈를 요약해줘:
+각 기사에서 공통적으로 다루는 이슈의 핵심을 다음 세 항목으로 요약해줘. 항목마다 한 문장 이내로 명확하게 설명해줘.
 
-    1. 핵심 사실  
-       - 무슨 일이 일어났는지 요약해줘
+1. 핵심 사실
+2. 각 신문사 기사들의 공통된 쟁점
+3. 향후 전망 또는 종합 판단
 
-    2. 각 신문사 기사들의 공통된 쟁점  
-       - 기사들이 공통으로 다루는 주요 쟁점을 정리해줘
+기사 내용:
+{context}
+"""
 
-    3. 향후 전망 또는 종합 판단  
-       - 앞으로 벌어질 가능성이 있는 일이나 전체적인 해석을 제시해줘
-
-    ※ 조건:
-    - 각 항목은 줄을 바꿔 **하나의 항목당 한 문장 이내**로 간결하게 써줘
-    - 직접 인용 대신 핵심 개념을 요약해줘
-    - 중립적이고 객관적인 표현으로 작성해줘
-
-    기사 원문:
-    """ + "\n".join(contents)
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
@@ -99,7 +93,19 @@ def summarize_conclusion(data: SummaryRequest):
         max_tokens=500
     )
 
+    result = response.choices[0].message.content.strip()
+
+    # 응답을 3개 항목으로 분할 (숫자 기준으로)
+    parts = {"fact": "", "issue": "", "outlook": ""}
+    for line in result.splitlines():
+        if line.startswith("1"):
+            parts["fact"] = line.partition(".")[2].strip()
+        elif line.startswith("2"):
+            parts["issue"] = line.partition(".")[2].strip()
+        elif line.startswith("3"):
+            parts["outlook"] = line.partition(".")[2].strip()
+
     return {
         "keyword": keyword,
-        "summary": response.choices[0].message.content.strip()
+        "summary": parts
     }
