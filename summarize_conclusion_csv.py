@@ -41,7 +41,7 @@ def get_trending_keywords():
 # ✅ 2. 기사 검색 API
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
-    df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
+    df = pd.read_csv("kobart_news_summarized.csv", encoding="utf-8")
     filtered = df[
         df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
         df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
