@@ -5,16 +5,17 @@ from typing import List
 from openai import OpenAI
 from dotenv import load_dotenv
 import pandas as pd
+from collections import Counter
 import os
 import json
 import random
-from summa import keywords as summa_keywords
+import re
 
-# 환경 변수 로딩 및 GPT 초기화
+# ✅ 환경 변수 로딩 및 GPT 초기화
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# FastAPI 앱 초기화
+# ✅ FastAPI 앱 초기화
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -24,30 +25,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 1. 추천 키워드 API (TextRank 기반)
+# ✅ 불용어 사전 정의
+stopwords = {
+    # 조사 및 형식어
+    "이", "가", "은", "는", "을", "를", "에", "의", "로", "과", "와", "도", "부터", "까지", "하고", "보다", "든지", "라도", "에서", "조언을",
+
+    # 보조 동사/형용사
+    "있다", "있으며" ,"없다", "되다", "하다", "된", "하는", "되고", "되며", "했다", "하는데", "하고", "하게", "하면서", "있는","밝혔다", "만에",
+
+    # 빈도 높은 일반어
+    "이번", "검색","지난", "최근", "대해", "대한", "관련", "통해", "가장", "계속", "더욱", "많은", "많이", "또한", "그러나", "그리고", "등", "때문", "때문에", "하지만", "그런", "이런", "저런",
+
+    # 시제/시간/조건
+    "지금", "오늘", "내일", "어제", "당시", "현재", "과거", "미래", "앞으로", "이미", "계속", "마지막", "처음", "항상", "때문", "우선",
+
+    # 인칭/지시/수량
+    "우리", "당신", "이것", "그것", "저것", "누구", "모두", "각각", "모든", "하나", "둘", "셋",
+
+    # 기타 불필요한 일반어
+    "상대", "입장", "정도", "수준", "칠한", "명으로", "사실","주요", "경우", "사람", "부분", "문제", "방법", "상황", "내용", "의견", "주장", "기자", "보도", "뉴스", "정부", "기관", "위원회"
+}
+
+
+# ✅ 간단한 키워드 추출 함수 수정
+def extract_keywords_from_text(text: str) -> List[str]:
+    words = re.findall(r"[가-힣]{2,5}", text)  # 2~5글자 한글 단어
+    return [word for word in words if word not in stopwords]
+
+# ✅ 1. 추천 키워드 API (랜덤 30개 기사 기반)
 @app.get("/trending-keywords")
 def get_trending_keywords():
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
-
     combined_texts = (df["title"].fillna("") + " " + df["summary"].fillna("")).tolist()
-    if len(combined_texts) < 30:
-        sampled_texts = combined_texts
-    else:
-        sampled_texts = random.sample(combined_texts, 30)
+    sampled_texts = combined_texts if len(combined_texts) < 30 else random.sample(combined_texts, 30)
 
-    text = " ".join(sampled_texts)
+    all_keywords = []
+    for text in sampled_texts:
+        all_keywords += extract_keywords_from_text(text)
 
-    # ✅ split=True: 단어 리스트만 반환 (점수 없음)
-    extracted = summa_keywords.keywords(text, words=30, split=True)
+    most_common = Counter(all_keywords).most_common(5)
+    return {"keywords": [{"keyword": kw, "count": count} for kw, count in most_common]}
 
-    # ✅ 두 글자 이상 필터링 & 상위 5개 추출
-    filtered_keywords = [kw for kw in extracted if len(kw) >= 2][:5]
-
-    return {
-        "keywords": [{"keyword": kw} for kw in filtered_keywords]
-    }
-
-# 2. 기사 검색 API
+# ✅ 2. 기사 검색 API
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
     df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
@@ -55,16 +74,19 @@ def search_articles(keyword: str = Query(..., min_length=2)):
         df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
         df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
     ].copy()
+
     filtered["row_order"] = filtered.index[::-1]
     latest_by_source = (
         filtered.sort_values("row_order")
         .drop_duplicates(subset=["source"], keep="first")
     )
+
     latest_articles = latest_by_source.sort_values("row_order").head(3)
     articles = latest_articles[["title", "summary", "content", "source", "link"]].to_dict(orient="records")
+
     return {"keyword": keyword, "articles": articles}
 
-# 3. 결론 요약 API
+# ✅ 3. 결론 요약 API
 class SummaryRequest(BaseModel):
     keyword: str
     contents: List[str]
@@ -74,6 +96,7 @@ def summarize_conclusion(data: SummaryRequest):
     keyword = data.keyword
     contents = data.contents[:3]
     joined_content = "\n".join(contents)
+
     prompt = f"""
 다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
 
@@ -95,13 +118,16 @@ def summarize_conclusion(data: SummaryRequest):
 기사 원문:
 {joined_content}
 """
+
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.5,
         max_tokens=500
     )
+
     content = response.choices[0].message.content.strip()
+
     try:
         summary_json = json.loads(content)
     except json.JSONDecodeError:
@@ -110,6 +136,7 @@ def summarize_conclusion(data: SummaryRequest):
             "issue": "요약 실패",
             "outlook": "요약 실패"
         }
+
     return {"keyword": keyword, "summary": summary_json}
 
 # uvicorn summarize_conclusion_csv:app --reload
