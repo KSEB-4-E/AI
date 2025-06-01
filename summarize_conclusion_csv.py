@@ -11,7 +11,6 @@ import random
 import re
 from konlpy.tag import Okt
 import openai
-import ast
 
 # 환경 변수 로드
 load_dotenv()
@@ -27,17 +26,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# TF-IDF 기반 키워드 추출 함수 (Okt 기반 명사 추출)
+# TF-IDF 기반 키워드 추출 함수 (Okt 기반 명사 추출 및 조사 제거)
 def extract_keywords(texts, top_n=5):
-    stopwords = set([...])  # 기존과 동일
+    stopwords = set([
+        "그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수",
+        "명이", "으로", "명으로", "들", "에서", "하다", "한", "대해", "있다", "대한",
+        "밝혔다", "후보는", "칠한", "지난", "있는", "주요", "로", "은", "는", "이", "가",
+        "을", "를", "에", "의", "와", "과", "도"
+    ])
 
     try:
-        # 정규표현식 기반으로 2글자 이상 한글만 추출
+        # Okt로 명사만 추출
+        okt = Okt()
+        all_text = " ".join(texts)
+        noun_words = [word for word in okt.nouns(all_text) if len(word) > 1 and word not in stopwords]
+        if not noun_words:
+            return []
+
         tokenized = []
         for text in texts:
-            words = re.findall(r"[가-힣]{2,}", text)
-            words = [w for w in words if w not in stopwords]
-            tokenized.append(" ".join(words))
+            nouns = [word for word in okt.nouns(text) if len(word) > 1 and word not in stopwords]
+            tokenized.append(" ".join(nouns))
 
         vectorizer = TfidfVectorizer()
         X = vectorizer.fit_transform(tokenized)
@@ -47,7 +56,6 @@ def extract_keywords(texts, top_n=5):
         keywords = [(feature_names[i], round(scores[i])) for i in range(len(scores))]
         keywords.sort(key=lambda x: x[1], reverse=True)
         return [{"keyword": kw, "count": int(count)} for kw, count in keywords[:top_n]]
-
     except Exception as e:
         print("TF-IDF 키워드 추출 오류:", e)
         return []
@@ -79,6 +87,7 @@ def search_articles(keyword: str = Query(..., min_length=2)):
     except Exception as e:
         return {"error": str(e)}
 
+# ✅ 3. 결론 요약 API
 class SummaryRequest(BaseModel):
     keyword: str
     contents: List[str]
@@ -87,7 +96,7 @@ class SummaryRequest(BaseModel):
 def summarize_conclusion(data: SummaryRequest):
     keyword = data.keyword
     contents = data.contents[:3]
-    joined_content = "\n".join(contents)
+    context = "\n".join(contents)
 
     prompt = f"""
 다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
@@ -95,19 +104,21 @@ def summarize_conclusion(data: SummaryRequest):
 이 기사들의 공통된 주제를 다음 3가지 항목으로 간결히 정리해줘.
 
 요약 형식은 다음 JSON 형태 그대로 출력해줘:
+
 {{
-  "fact": "핵심 사실을 요약",
-  "issue": "신문사들의 공통 쟁점 요약",
-  "outlook": "향후 전망 또는 종합 판단 요약"
+  "fact": "핵심 사실을 1문장으로 요약",
+  "issue": "신문사들의 공통된 쟁점을 1문장으로 요약",
+  "outlook": "향후 전망 또는 종합 판단을 1문장으로 요약"
 }}
 
 조건:
-- 각 항목은 1문장으로 요약
+- 각 항목은 반드시 1문장
 - 직접 인용 없이 요점을 명확히 서술
-- 항목 이름은 반드시 "fact", "issue", "outlook"으로 유지
+- 항목 이름은 반드시 "fact", "issue", "outlook"만 사용
+- 반드시 JSON 형식 유지
 
 기사 원문:
-{joined_content}
+{context}
 """
 
     try:
@@ -118,30 +129,20 @@ def summarize_conclusion(data: SummaryRequest):
             max_tokens=500
         )
         content = response.choices[0].message["content"].strip()
+        summary_json = json.loads(content)
 
-        # GPT 응답이 JSON이 아닐 수도 있으므로 ast.literal_eval 시도
-        try:
-            summary_json = json.loads(content)
-        except json.JSONDecodeError:
-            try:
-                summary_json = ast.literal_eval(content)
-            except Exception:
-                summary_json = {
-                    "fact": "요약 실패",
-                    "issue": "요약 실패",
-                    "outlook": "요약 실패",
-                    "error": "응답이 JSON 형식이 아님"
-                }
+        return {"keyword": keyword, "summary": summary_json}
 
     except Exception as e:
-        summary_json = {
-            "fact": "요약 실패",
-            "issue": "요약 실패",
-            "outlook": "요약 실패",
-            "error": str(e)
+        return {
+            "keyword": keyword,
+            "summary": {
+                "fact": "요약 실패",
+                "issue": "요약 실패",
+                "outlook": "요약 실패",
+                "error": str(e)
+            }
         }
-
-    return {"keyword": keyword, "summary": summary_json}
 
 # uvicorn summarize_conclusion_csv:app --reload
 # 키워드: http://localhost:8000/trending-keywords
