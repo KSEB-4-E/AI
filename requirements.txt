@@ -3,5 +3,6 @@ uvicorn
 python-dotenv
 pandas
 scikit-learn
-nltk
 openai
+konlpy
+JPype1
