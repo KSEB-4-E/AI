@@ -10,11 +10,11 @@ import json
 import random
 import re
 from konlpy.tag import Okt
-import openai
+from openai import OpenAI
 
 # 환경 변수 로드
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # FastAPI 초기화
 app = FastAPI()
@@ -98,36 +98,34 @@ def summarize_conclusion(data: SummaryRequest):
     prompt = f"""
 다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
 
-각 기사에서 공통적으로 다루는 이슈의 핵심을 다음 세 항목으로 요약해줘. 항목마다 한 문장 이내로 명확하게 설명해줘.
+이 기사들의 공통된 주제를 다음 3가지 항목으로 간결히 정리해줘.
 
-1. 핵심 사실
-2. 각 신문사 기사들의 공통된 쟁점
-3. 향후 전망 또는 종합 판단
+요약 형식은 다음 JSON 형태 그대로 출력해줘:
 
-요약 형식은 다음 JSON 형태로 출력해줘:
 {{
-  "fact": "...",
-  "issue": "...",
-  "outlook": "..."
+  "fact": "핵심 사실을 1문장으로 요약",
+  "issue": "신문사들의 공통된 쟁점을 1문장으로 요약",
+  "outlook": "향후 전망 또는 종합 판단을 1문장으로 요약"
 }}
 
 조건:
-- 각 항목은 반드시 1문장으로 작성
-- 직접 인용 없이 핵심 요점을 명확히 정리
-- JSON 구조를 반드시 유지
+- 각 항목은 반드시 1문장
+- 직접 인용 없이 요점을 명확히 서술
+- 항목 이름은 반드시 "fact", "issue", "outlook"만 사용
+- 반드시 JSON 형식 유지
 
 기사 원문:
 {context}
 """
 
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5,
             max_tokens=500
         )
-        content = response.choices[0].message["content"].strip()
+        content = response.choices[0].message.content.strip()
         summary_json = json.loads(content)
 
         return {"keyword": keyword, "summary": summary_json}
