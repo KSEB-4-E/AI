@@ -2,20 +2,21 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
-from openai import OpenAI
 from dotenv import load_dotenv
+from sklearn.feature_extraction.text import TfidfVectorizer
 import pandas as pd
-from collections import Counter
 import os
 import json
 import random
 import re
+from konlpy.tag import Okt
+import openai
 
-# ✅ 환경 변수 로딩 및 GPT 초기화
+# 환경 변수 로드
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# ✅ FastAPI 앱 초기화
+# FastAPI 초기화
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -25,66 +26,63 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ 불용어 사전 정의
-stopwords = {
-    # 조사 및 형식어
-    "이", "가", "은", "는", "을", "를", "에", "의", "로", "과", "와", "도", "부터", "까지", "하고", "보다", "든지", "라도", "에서", "조언을",
+# TF-IDF 기반 키워드 추출 함수 (Okt 기반 명사 추출 및 조사 제거)
+def extract_keywords(texts, top_n=5):
+    stopwords = set([
+        "그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수",
+        "명이", "으로", "명으로", "들", "에서", "하다", "한", "대해", "있다", "대한",
+        "밝혔다", "후보는", "칠한", "지난", "있는", "주요", "로", "은", "는", "이", "가",
+        "을", "를", "에", "의", "와", "과", "도"
+    ])
 
-    # 보조 동사/형용사
-    "있다", "있으며" ,"없다", "되다", "하다", "된", "하는", "되고", "되며", "했다", "하는데", "하고", "하게", "하면서", "있는","밝혔다", "만에",
+    try:
+        okt = Okt()
+        tokenized = []
+        for text in texts:
+            nouns = [word for word in okt.nouns(text) if len(word) > 1 and word not in stopwords]
+            tokenized.append(" ".join(nouns))
 
-    # 빈도 높은 일반어
-    "이번", "검색","지난", "최근", "대해", "대한", "관련", "통해", "가장", "계속", "더욱", "많은", "많이", "또한", "그러나", "그리고", "등", "때문", "때문에", "하지만", "그런", "이런", "저런",
+        if not any(tokenized):
+            return []
 
-    # 시제/시간/조건
-    "지금", "오늘", "내일", "어제", "당시", "현재", "과거", "미래", "앞으로", "이미", "계속", "마지막", "처음", "항상", "때문", "우선",
+        vectorizer = TfidfVectorizer()
+        X = vectorizer.fit_transform(tokenized)
+        feature_names = vectorizer.get_feature_names_out()
+        scores = X.sum(axis=0).A1
 
-    # 인칭/지시/수량
-    "우리", "당신", "이것", "그것", "저것", "누구", "모두", "각각", "모든", "하나", "둘", "셋",
+        keywords = [(feature_names[i], round(scores[i])) for i in range(len(scores))]
+        keywords.sort(key=lambda x: x[1], reverse=True)
+        return [{"keyword": kw, "count": int(count)} for kw, count in keywords[:top_n]]
+    except Exception as e:
+        print("TF-IDF 키워드 추출 오류:", e)
+        return []
 
-    # 기타 불필요한 일반어
-    "상대", "입장", "정도", "수준", "칠한", "명으로", "사실","주요", "경우", "사람", "부분", "문제", "방법", "상황", "내용", "의견", "주장", "기자", "보도", "뉴스", "정부", "기관", "위원회"
-}
-
-
-# ✅ 간단한 키워드 추출 함수 수정
-def extract_keywords_from_text(text: str) -> List[str]:
-    words = re.findall(r"[가-힣]{2,5}", text)  # 2~5글자 한글 단어
-    return [word for word in words if word not in stopwords]
-
-# ✅ 1. 추천 키워드 API (랜덤 30개 기사 기반)
 @app.get("/trending-keywords")
 def get_trending_keywords():
-    df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
-    combined_texts = (df["title"].fillna("") + " " + df["summary"].fillna("")).tolist()
-    sampled_texts = combined_texts if len(combined_texts) < 30 else random.sample(combined_texts, 30)
+    try:
+        df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
+        combined = (df["title"].fillna("") + " " + df["summary"].fillna(""))
+        sampled_texts = random.sample(combined.tolist(), min(30, len(combined)))
+        keywords = extract_keywords(sampled_texts, top_n=5)
+        return {"keywords": keywords}
+    except Exception as e:
+        return {"error": str(e)}
 
-    all_keywords = []
-    for text in sampled_texts:
-        all_keywords += extract_keywords_from_text(text)
-
-    most_common = Counter(all_keywords).most_common(5)
-    return {"keywords": [{"keyword": kw, "count": count} for kw, count in most_common]}
-
-# ✅ 2. 기사 검색 API
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
-    df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
-    filtered = df[
-        df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
-        df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
-    ].copy()
-
-    filtered["row_order"] = filtered.index[::-1]
-    latest_by_source = (
-        filtered.sort_values("row_order")
-        .drop_duplicates(subset=["source"], keep="first")
-    )
-
-    latest_articles = latest_by_source.sort_values("row_order").head(3)
-    articles = latest_articles[["title", "summary", "content", "source", "link"]].to_dict(orient="records")
-
-    return {"keyword": keyword, "articles": articles}
+    try:
+        df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
+        filtered = df[
+            df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
+            df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
+        ].copy()
+        filtered["row_order"] = filtered.index[::-1]
+        latest_by_source = filtered.sort_values("row_order").drop_duplicates(subset=["source"], keep="first")
+        latest_articles = latest_by_source.sort_values("row_order").head(3)
+        articles = latest_articles[["title", "summary", "content", "source", "link"]].to_dict(orient="records")
+        return {"keyword": keyword, "articles": articles}
+    except Exception as e:
+        return {"error": str(e)}
 
 # ✅ 3. 결론 요약 API
 class SummaryRequest(BaseModel):
@@ -95,53 +93,58 @@ class SummaryRequest(BaseModel):
 def summarize_conclusion(data: SummaryRequest):
     keyword = data.keyword
     contents = data.contents[:3]
-    joined_content = "\n".join(contents)
+    context = "\n".join(contents)
 
     prompt = f"""
 다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
 
-이 기사들의 공통된 주제를 다음 3가지 항목으로 간결히 정리해줘.
+각 기사에서 공통적으로 다루는 이슈의 핵심을 다음 세 항목으로 요약해줘. 항목마다 한 문장 이내로 명확하게 설명해줘.
 
-요약 형식은 다음 JSON 형태 그대로 출력해줘:
+1. 핵심 사실
+2. 각 신문사 기사들의 공통된 쟁점
+3. 향후 전망 또는 종합 판단
 
+요약 형식은 다음 JSON 형태로 출력해줘:
 {{
-  "fact": "핵심 사실을 요약",
-  "issue": "신문사들의 공통 쟁점 요약",
-  "outlook": "향후 전망 또는 종합 판단 요약"
+  "fact": "...",
+  "issue": "...",
+  "outlook": "..."
 }}
 
 조건:
-- 각 항목은 1문장으로 요약
-- 직접 인용 없이 요점을 명확히 서술
-- 항목 이름은 반드시 "fact", "issue", "outlook"으로 유지
+- 각 항목은 반드시 1문장으로 작성
+- 직접 인용 없이 핵심 요점을 명확히 정리
+- JSON 구조를 반드시 유지
 
 기사 원문:
-{joined_content}
+{context}
 """
 
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.5,
-        max_tokens=500
-    )
-
-    content = response.choices[0].message.content.strip()
-
     try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=500
+        )
+        content = response.choices[0].message["content"].strip()
         summary_json = json.loads(content)
-    except json.JSONDecodeError:
-        summary_json = {
-            "fact": "요약 실패",
-            "issue": "요약 실패",
-            "outlook": "요약 실패"
-        }
 
-    return {"keyword": keyword, "summary": summary_json}
+        return {"keyword": keyword, "summary": summary_json}
+
+    except Exception as e:
+        print("결론 요약 오류:", e)
+        return {
+            "keyword": keyword,
+            "summary": {
+                "fact": "요약 실패",
+                "issue": "요약 실패",
+                "outlook": "요약 실패",
+                "error": str(e)
+            }
+        }
 
 # uvicorn summarize_conclusion_csv:app --reload
 # 키워드: http://localhost:8000/trending-keywords
-#
 # 본문검색: http://localhost:8000/search-articles?keyword=카카오
-#
-# http://localhost:8000/docs
+# 문서화: http://localhost:8000/docs
