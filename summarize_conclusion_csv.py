@@ -10,11 +10,11 @@ import json
 import random
 import re
 from konlpy.tag import Okt
-from openai import OpenAI
+import openai
 
 # 환경 변수 로드
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # FastAPI 초기화
 app = FastAPI()
@@ -43,6 +43,7 @@ def extract_keywords(texts, top_n=5):
             tokenized.append(" ".join(nouns))
 
         if not any(tokenized):
+            print("⚠️ 토큰화 결과 없음")
             return []
 
         vectorizer = TfidfVectorizer()
@@ -54,18 +55,22 @@ def extract_keywords(texts, top_n=5):
         keywords.sort(key=lambda x: x[1], reverse=True)
         return [{"keyword": kw, "count": int(count)} for kw, count in keywords[:top_n]]
     except Exception as e:
-        print("TF-IDF 키워드 추출 오류:", e)
+        print("❌ TF-IDF 키워드 추출 오류:", e)
         return []
 
 @app.get("/trending-keywords")
 def get_trending_keywords():
     try:
         df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
+        print("✅ CSV 로드 완료:", df.shape)
         combined = (df["title"].fillna("") + " " + df["summary"].fillna(""))
         sampled_texts = random.sample(combined.tolist(), min(30, len(combined)))
+        print("✅ 샘플링 완료:", len(sampled_texts))
         keywords = extract_keywords(sampled_texts, top_n=5)
+        print("✅ 키워드 추출 결과:", keywords)
         return {"keywords": keywords}
     except Exception as e:
+        print("❌ 추천 키워드 오류:", e)
         return {"error": str(e)}
 
 @app.get("/search-articles")
@@ -119,13 +124,13 @@ def summarize_conclusion(data: SummaryRequest):
 """
 
     try:
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5,
             max_tokens=500
         )
-        content = response.choices[0].message.content.strip()
+        content = response.choices[0].message["content"].strip()
         summary_json = json.loads(content)
 
         return {"keyword": keyword, "summary": summary_json}
