@@ -1,7 +1,8 @@
 fastapi
 uvicorn
-pydantic
 python-dotenv
-openai
 pandas
-summa
+scikit-learn
+openai
+konlpy
+JPype1
