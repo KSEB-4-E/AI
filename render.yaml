@@ -5,7 +5,7 @@ services:
     region: oregon
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn summarize_conclusion_csv:app --reload
+    startCommand: uvicorn summarize_conclusion_csv:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: OPENAI_API_KEY
         sync: false  # Render의 Secret에 따로 등록
