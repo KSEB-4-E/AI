@@ -11,6 +11,7 @@ import random
 import re
 from konlpy.tag import Okt
 import openai
+import ast
 
 # 환경 변수 로드
 load_dotenv()
@@ -108,6 +109,7 @@ def summarize_conclusion(data: SummaryRequest):
 기사 원문:
 {joined_content}
 """
+
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
@@ -116,7 +118,21 @@ def summarize_conclusion(data: SummaryRequest):
             max_tokens=500
         )
         content = response.choices[0].message["content"].strip()
-        summary_json = json.loads(content)
+
+        # GPT 응답이 JSON이 아닐 수도 있으므로 ast.literal_eval 시도
+        try:
+            summary_json = json.loads(content)
+        except json.JSONDecodeError:
+            try:
+                summary_json = ast.literal_eval(content)
+            except Exception:
+                summary_json = {
+                    "fact": "요약 실패",
+                    "issue": "요약 실패",
+                    "outlook": "요약 실패",
+                    "error": "응답이 JSON 형식이 아님"
+                }
+
     except Exception as e:
         summary_json = {
             "fact": "요약 실패",
