@@ -9,7 +9,6 @@ import os
 import json
 import random
 import re
-from konlpy.tag import Okt
 import openai
 
 # 환경 변수 로드
@@ -26,7 +25,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# TF-IDF 기반 키워드 추출 함수 (Okt 기반 명사 추출 및 조사 제거)
+# TF-IDF 기반 키워드 추출 함수 (정규표현식 기반 명사 필터링)
 def extract_keywords(texts, top_n=5):
     stopwords = set([
         "그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수",
@@ -38,7 +37,6 @@ def extract_keywords(texts, top_n=5):
     try:
         tokenized = []
         for text in texts:
-            # 2글자 이상 한글만 추출 (형태소 분석 없이)
             words = re.findall(r"[가-힣]{2,}", text)
             words = [w for w in words if w not in stopwords]
             tokenized.append(" ".join(words))
@@ -62,15 +60,11 @@ def extract_keywords(texts, top_n=5):
 def get_trending_keywords():
     try:
         df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
-        print("✅ CSV 로드 완료:", df.shape)
         combined = (df["title"].fillna("") + " " + df["summary"].fillna(""))
         sampled_texts = random.sample(combined.tolist(), min(30, len(combined)))
-        print("✅ 샘플링 완료:", len(sampled_texts))
         keywords = extract_keywords(sampled_texts, top_n=5)
-        print("✅ 키워드 추출 결과:", keywords)
         return {"keywords": keywords}
     except Exception as e:
-        print("❌ 추천 키워드 오류:", e)
         return {"error": str(e)}
 
 @app.get("/search-articles")
@@ -106,7 +100,6 @@ def summarize_conclusion(data: SummaryRequest):
 이 기사들의 공통된 주제를 다음 3가지 항목으로 간결히 정리해줘.
 
 요약 형식은 다음 JSON 형태 그대로 출력해줘:
-
 {{
   "fact": "핵심 사실을 1문장으로 요약",
   "issue": "신문사들의 공통된 쟁점을 1문장으로 요약",
@@ -124,15 +117,16 @@ def summarize_conclusion(data: SummaryRequest):
 """
 
     try:
-        response = openai.ChatCompletion.create(
+        from openai import OpenAI
+        client = OpenAI()
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5,
             max_tokens=500
         )
-        content = response.choices[0].message["content"].strip()
-        summary_json = json.loads(content)
-
+        result = response.choices[0].message.content.strip()
+        summary_json = json.loads(result)
         return {"keyword": keyword, "summary": summary_json}
 
     except Exception as e:
