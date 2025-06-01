@@ -36,14 +36,14 @@ def extract_keywords(texts, top_n=5):
     ])
 
     try:
-        okt = Okt()
         tokenized = []
         for text in texts:
-            nouns = [word for word in okt.nouns(text) if len(word) > 1 and word not in stopwords]
-            tokenized.append(" ".join(nouns))
+            # 2글자 이상 한글만 추출 (형태소 분석 없이)
+            words = re.findall(r"[가-힣]{2,}", text)
+            words = [w for w in words if w not in stopwords]
+            tokenized.append(" ".join(words))
 
         if not any(tokenized):
-            print("⚠️ 토큰화 결과 없음")
             return []
 
         vectorizer = TfidfVectorizer()
@@ -55,7 +55,7 @@ def extract_keywords(texts, top_n=5):
         keywords.sort(key=lambda x: x[1], reverse=True)
         return [{"keyword": kw, "count": int(count)} for kw, count in keywords[:top_n]]
     except Exception as e:
-        print("❌ TF-IDF 키워드 추출 오류:", e)
+        print("TF-IDF 키워드 추출 오류:", e)
         return []
 
 @app.get("/trending-keywords")
