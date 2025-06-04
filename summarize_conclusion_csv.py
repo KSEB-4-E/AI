@@ -31,10 +31,12 @@ def extract_keywords(texts, top_n=5):
         "그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수",
         "명이", "으로", "명으로", "들", "에서", "하다", "한", "대해", "있다", "대한",
         "밝혔다", "후보는", "칠한", "지난", "있는", "주요", "로", "은", "는", "이", "가",
-        "을", "를", "에", "의", "와", "과", "도"
+        "을", "를", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다",
+        "만에", "내일", "당신의", "기사를", "동향과", "정부의"
     ])
 
     try:
+        # 전처리: 불용어 제거
         tokenized = []
         for text in texts:
             words = re.findall(r"[가-힣]{2,}", text)
@@ -44,14 +46,23 @@ def extract_keywords(texts, top_n=5):
         if not any(tokenized):
             return []
 
+        # TF-IDF 벡터라이저
         vectorizer = TfidfVectorizer()
         X = vectorizer.fit_transform(tokenized)
         feature_names = vectorizer.get_feature_names_out()
-        scores = X.sum(axis=0).A1
 
-        keywords = [(feature_names[i], round(scores[i])) for i in range(len(scores))]
+        # 단어별 TF-IDF 총합 및 등장 횟수 계산
+        tfidf_scores = X.sum(axis=0).A1
+        word_counts = (X > 0).sum(axis=0).A1  # 단어 등장 문서 수 (or 사용하고 싶으면 `.toarray().sum(axis=0)` 으로 전체 등장 횟수)
+
+        keywords = []
+        for idx, word in enumerate(feature_names):
+            if word not in stopwords:
+                keywords.append((word, int(word_counts[idx])))
+
         keywords.sort(key=lambda x: x[1], reverse=True)
-        return [{"keyword": kw, "count": int(count)} for kw, count in keywords[:top_n]]
+        return [{"keyword": kw, "count": count} for kw, count in keywords[:top_n]]
+
     except Exception as e:
         print("TF-IDF 키워드 추출 오류:", e)
         return []
@@ -59,7 +70,7 @@ def extract_keywords(texts, top_n=5):
 @app.get("/trending-keywords")
 def get_trending_keywords():
     try:
-        df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
+        df = pd.read_excel("kobart_news_summarized.xlsx")
         combined = (df["title"].fillna("") + " " + df["summary"].fillna(""))
         sampled_texts = random.sample(combined.tolist(), min(30, len(combined)))
         keywords = extract_keywords(sampled_texts, top_n=5)
@@ -70,7 +81,7 @@ def get_trending_keywords():
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
     try:
-        df = pd.read_csv("kobart_news_summarized.csv", encoding="cp949")
+        df = pd.read_excel("kobart_news_summarized.xlsx")
         filtered = df[
             df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
             df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
