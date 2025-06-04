@@ -50,8 +50,6 @@ dist/
 *.sqlite3
 *.db
 *.tsv
-*.xls
-*.xlsx
 *.parquet
 *.h5
 *.zip
