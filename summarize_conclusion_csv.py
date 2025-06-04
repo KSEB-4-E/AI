@@ -15,6 +15,7 @@ import openai
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+
 # FastAPI 초기화
 app = FastAPI()
 app.add_middleware(
