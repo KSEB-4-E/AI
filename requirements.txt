@@ -1,8 +1,12 @@
-fastapi
 uvicorn
 pydantic
 python-dotenv
-pandas
+feedparser
+requests
+beautifulsoup4
+transformersㅎㅎ
+torch
 scikit-learn
-openpyxl
+pandas
+apscheduler
 openai>=1.0.0
