@@ -2,12 +2,7 @@ fastapi
 uvicorn
 pydantic
 python-dotenv
-feedparser
-requests
-beautifulsoup4
-transformers
-torch
-scikit-learn
 pandas
-apscheduler
+scikit-learn
+openpyxl
 openai>=1.0.0
