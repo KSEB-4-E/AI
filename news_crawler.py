@@ -16,7 +16,6 @@ import random
 import re
 from bs4 import BeautifulSoup
 from datetime import datetime
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import openai
 
 # ===================== [초기 설정] =====================
@@ -29,10 +28,6 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
-
-model_name = "digit82/kobart-summarization"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
 
 rss_feeds = {
     "전자신문": "https://rss.etnews.com/Section901.xml",
@@ -56,24 +51,28 @@ def extract_body(url):
     except:
         return "본문 없음"
 
-def summarize_kobart(text):
+def summarize_with_openai(text):
+    prompt = f"""
+다음은 뉴스 기사 본문입니다. 이 기사의 핵심 내용을 한 문장으로 요약해줘:
+
+{text[:1500]}
+""".strip()
     try:
-        if not text.strip():
-            return "요약 없음"
-        inputs = tokenizer.encode(text[:1024], return_tensors="pt", truncation=True)
-        summary_ids = model.generate(inputs, max_length=256, min_length=20, length_penalty=2.0, num_beams=4, early_stopping=True)
-        return tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-    except:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=150
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[요약 실패] {e}")
         return "요약 실패"
 
 def save_to_sqlite(df, db_path=None, table_name="news"):
     base_dir = os.path.dirname(__file__)
     db_path = os.path.join(base_dir, "news_articles.db")
     today = datetime.today().strftime("%Y%m%d")
-
-    print(f"[현재 작업 디렉토리]: {os.getcwd()}")
-    print(f"[DB 저장 경로]: {db_path}")
-
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
@@ -109,7 +108,7 @@ def run_news_job():
                 title = entry.title.strip().replace("\n", " ").replace(",", " ")
                 link = entry.link
                 content = extract_body(link)
-                summary = "요약 생략 (본문 부족)" if content == "본문 없음" else summarize_kobart(content)
+                summary = "요약 생략 (본문 부족)" if content == "본문 없음" else summarize_with_openai(content)
                 data.append({
                     "source": source, "title": title, "link": link,
                     "content": content, "summary": summary
@@ -123,11 +122,8 @@ def run_news_job():
 
 def extract_keywords(texts, top_n=5):
     stopwords = set([
-        "그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수",
-        "명이", "으로", "명으로", "들", "에서", "하다", "한", "대해", "있다", "대한",
-        "밝혔다", "후보는", "칠한", "지난", "있는", "주요", "로", "은", "는", "이", "가",
-        "을", "를", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다",
-        "만에", "내일", "당신의", "기사를", "동향과", "정부의"
+        "그리고", "그러나", "하지만", "등", "이", "그", "것", "수", "명으로", "에서", "하다",
+        "은", "는", "이", "가", "을", "를", "에", "의", "와", "과", "도", "것으로"
     ])
     try:
         tokenized = []
@@ -197,33 +193,23 @@ class SummaryRequest(BaseModel):
 def summarize_conclusion(data: SummaryRequest):
     keyword = data.keyword
     context = "\n".join(data.contents[:3])
-
     prompt = f"""
     다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
 
     이 기사들의 공통된 주제를 다음 3가지 항목으로 간결히 정리해줘.
 
-    요약 형식은 다음 JSON 형태 그대로 출력해줘:
+    JSON 형식:
     {{
       "fact": "핵심 사실을 1문장으로 요약",
       "issue": "신문사들의 공통된 쟁점을 1문장으로 요약",
       "outlook": "향후 전망 또는 종합 판단을 1문장으로 요약"
     }}
 
-    조건:
-    - 각 항목은 반드시 1문장
-    - 직접 인용 없이 요점을 명확히 서술
-    - 항목 이름은 반드시 "fact", "issue", "outlook"만 사용
-    - 반드시 JSON 형식 유지
-
     기사 원문:
     {context}
-    """.strip()
-
+    """
     try:
-        from openai import OpenAI
-        client = OpenAI()
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5,
@@ -245,7 +231,3 @@ def start_scheduler():
     scheduler.add_job(run_news_job, "interval", hours=1)
     scheduler.start()
     print("⏰ 스케줄러 시작됨: 1시간마다 뉴스 수집")
-
-# ===================== [직접 실행 테스트용] =====================
-if __name__ == "__main__":
-    run_news_job()
