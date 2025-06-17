@@ -4,7 +4,7 @@ python-dotenv
 feedparser
 requests
 beautifulsoup4
-transformersㅎㅎ
+transformers
 torch
 scikit-learn
 pandas
