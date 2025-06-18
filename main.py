@@ -124,11 +124,11 @@ def run_news_job():
                 print(f"📄 본문 길이: {len(content)}")
 
                 if content == "본문 없음":
+                    print("⚠️ 본문 없음 - 요약 생략")
                     summary = "요약 생략 (본문 부족)"
-                    print("⚠️ 본문 없음으로 요약 생략")
                 else:
                     summary = summarize_kobart(content)
-                    print(f"📚 요약 내용: {summary[:60]}...")
+                    print(f"📚 요약 내용: {summary[:50]}...")  # 요약 앞 50자만 출력
 
                 data.append({
                     "source": source,
@@ -141,12 +141,14 @@ def run_news_job():
                 time.sleep(0.2)
 
         df = pd.DataFrame(data).drop_duplicates(subset="title")
-
-        print(f"📦 최종 저장 대상 뉴스 수: {len(df)}")
+        print(f"📊 누적 수집된 기사 수: {len(data)}")
+        print(f"📦 최종 저장 대상 뉴스 수 (중복 제거 후): {len(df)}")
         if df.empty:
-            print("⚠️ 저장할 데이터 없음 — 종료")
+            print("❌ 저장할 뉴스가 없습니다. 종료합니다.")
+            return
         else:
-            save_to_sqlite(df)
+            print(f"✅ DB 저장 시작 - 예시 제목: {df.iloc[0]['title']}")
+        save_to_sqlite(df)
 
         print(f"[{datetime.now()}] ✅ 뉴스 저장 완료")
 
