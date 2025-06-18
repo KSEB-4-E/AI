@@ -106,25 +106,52 @@ def save_to_sqlite(df, db_path=None, table_name="news"):
 
 def run_news_job():
     try:
-        print(f"[{datetime.now()}] 뉴스 수집 시작")
+        print(f"\n[{datetime.now()}] 📰 뉴스 수집 시작")
+
         data = []
         for source, rss_url in rss_feeds.items():
+            print(f"📡 [RSS 요청] 언론사: {source} | URL: {rss_url}")
             feed = feedparser.parse(rss_url)
+            print(f"✅ [RSS 수신 완료] {len(feed.entries)}개 기사 발견")
+
             for entry in feed.entries[:25]:
                 title = entry.title.strip().replace("\n", " ").replace(",", " ")
                 link = entry.link
+                print(f"🔗 기사 제목: {title}")
+                print(f"🧭 기사 링크: {link}")
+
                 content = extract_body(link)
-                summary = "요약 생략 (본문 부족)" if content == "본문 없음" else summarize_kobart(content)
+                print(f"📄 본문 길이: {len(content)}")
+
+                if content == "본문 없음":
+                    summary = "요약 생략 (본문 부족)"
+                    print("⚠️ 본문 없음으로 요약 생략")
+                else:
+                    summary = summarize_kobart(content)
+                    print(f"📚 요약 내용: {summary[:60]}...")
+
                 data.append({
-                    "source": source, "title": title, "link": link,
-                    "content": content, "summary": summary
+                    "source": source,
+                    "title": title,
+                    "link": link,
+                    "content": content,
+                    "summary": summary
                 })
+
                 time.sleep(0.2)
+
         df = pd.DataFrame(data).drop_duplicates(subset="title")
-        save_to_sqlite(df)
+
+        print(f"📦 최종 저장 대상 뉴스 수: {len(df)}")
+        if df.empty:
+            print("⚠️ 저장할 데이터 없음 — 종료")
+        else:
+            save_to_sqlite(df)
+
         print(f"[{datetime.now()}] ✅ 뉴스 저장 완료")
+
     except Exception as e:
-        print(f"[뉴스 수집 실패 ❌]: {e}")
+        print(f"[🔥 예외 발생] 뉴스 수집 실패: {e}")
 
 def extract_keywords(texts, top_n=5):
     stopwords = set(["그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수", "으로", "들", "에서", "하다", "한", "대해",
