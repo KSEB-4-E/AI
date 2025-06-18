@@ -16,8 +16,10 @@ import random
 import re
 from bs4 import BeautifulSoup
 from datetime import datetime
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import openai
 
+# ===================== [초기 설정] =====================
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -28,6 +30,10 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 
+model_name = "digit82/kobart-summarization"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+
 rss_feeds = {
     "전자신문": "https://rss.etnews.com/Section901.xml",
     "한겨레": "https://www.hani.co.kr/rss/",
@@ -36,21 +42,7 @@ rss_feeds = {
     "세계일보": "https://www.segye.com/Articles/RSSList/segye_recent.xml"
 }
 
-
-# ✅ 외부 KoBART 호출 함수
-def summarize_kobart_external(texts: List[str]) -> List[str]:
-    try:
-        res = requests.post(
-            "https://dissolve1882-kobart-summary-api.hf.space/summarize",
-            json={"texts": texts},
-            timeout=30
-        )
-        return res.json().get("summaries", ["요약 없음"] * len(texts))
-    except Exception as e:
-        print(f"[ERROR] 외부 KoBART 호출 실패: {e}")
-        return ["요약 실패"] * len(texts)
-
-
+# ===================== [핵심 기능] =====================
 def extract_body(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -64,11 +56,24 @@ def extract_body(url):
     except:
         return "본문 없음"
 
+def summarize_kobart(text):
+    try:
+        if not text.strip():
+            return "요약 없음"
+        inputs = tokenizer.encode(text[:1024], return_tensors="pt", truncation=True)
+        summary_ids = model.generate(inputs, max_length=256, min_length=20, length_penalty=2.0, num_beams=4, early_stopping=True)
+        return tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+    except:
+        return "요약 실패"
 
 def save_to_sqlite(df, db_path=None, table_name="news"):
     base_dir = os.path.dirname(__file__)
     db_path = os.path.join(base_dir, "news_articles.db")
     today = datetime.today().strftime("%Y%m%d")
+
+    print(f"[현재 작업 디렉토리]: {os.getcwd()}")
+    print(f"[DB 저장 경로]: {db_path}")
+
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
@@ -90,9 +95,9 @@ def save_to_sqlite(df, db_path=None, table_name="news"):
             """, (row['source'], row['title'], row['link'], row['content'], row['summary'], today))
         conn.commit()
         conn.close()
+        print("[DB 저장 완료 ✅]")
     except Exception as e:
         print(f"[DB 저장 실패 ❌]: {e}")
-
 
 def run_news_job():
     try:
@@ -104,23 +109,32 @@ def run_news_job():
                 title = entry.title.strip().replace("\n", " ").replace(",", " ")
                 link = entry.link
                 content = extract_body(link)
-                data.append({"source": source, "title": title, "link": link, "content": content})
-                time.sleep(0.1)
+                summary = "요약 생략 (본문 부족)" if content == "본문 없음" else summarize_kobart(content)
+                data.append({
+                    "source": source, "title": title, "link": link,
+                    "content": content, "summary": summary
+                })
+                time.sleep(0.2)
         df = pd.DataFrame(data).drop_duplicates(subset="title")
-        summaries = summarize_kobart_external(df["content"].tolist())
-        df["summary"] = summaries
         save_to_sqlite(df)
         print(f"[{datetime.now()}] ✅ 뉴스 저장 완료")
     except Exception as e:
         print(f"[뉴스 수집 실패 ❌]: {e}")
 
-
 def extract_keywords(texts, top_n=5):
-    stopwords = set(
-        ["그리고", "그러나", "하지만", "등", "이", "그", "것", "수", "에서", "하다", "은", "는", "이", "가", "을", "를", "에", "의", "와", "과",
-         "도"])
+    stopwords = set([
+        "그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수",
+        "명이", "으로", "명으로", "들", "에서", "하다", "한", "대해", "있다", "대한",
+        "밝혔다", "후보는", "칠한", "지난", "있는", "주요", "로", "은", "는", "이", "가",
+        "을", "를", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다",
+        "만에", "내일", "당신의", "기사를", "동향과", "정부의"
+    ])
     try:
-        tokenized = [" ".join([w for w in re.findall(r"[가-힣]{2,}", text) if w not in stopwords]) for text in texts]
+        tokenized = []
+        for text in texts:
+            words = re.findall(r"[가-힣]{2,}", text)
+            words = [w for w in words if w not in stopwords]
+            tokenized.append(" ".join(words))
         if not any(tokenized):
             return []
         vectorizer = TfidfVectorizer()
@@ -133,12 +147,11 @@ def extract_keywords(texts, top_n=5):
     except:
         return []
 
-
+# ===================== [FastAPI 엔드포인트] =====================
 @app.get("/run-news")
 def trigger_run(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_news_job)
     return {"message": "뉴스 수집을 시작했습니다."}
-
 
 @app.get("/trending-keywords")
 def get_trending_keywords():
@@ -154,7 +167,6 @@ def get_trending_keywords():
     except Exception as e:
         return {"error": str(e)}
 
-
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
     try:
@@ -166,7 +178,7 @@ def search_articles(keyword: str = Query(..., min_length=2)):
         filtered = df[
             df["title"].str.contains(keyword, case=False, na=False) |
             df["summary"].str.contains(keyword, case=False, na=False)
-            ].copy()
+        ].copy()
         filtered["row_order"] = filtered.index[::-1]
         latest_by_source = filtered.sort_values("row_order").drop_duplicates("source")
         articles = latest_by_source.sort_values("row_order").head(3)
@@ -177,11 +189,9 @@ def search_articles(keyword: str = Query(..., min_length=2)):
     except Exception as e:
         return {"error": str(e)}
 
-
 class SummaryRequest(BaseModel):
     keyword: str
     contents: List[str]
-
 
 @app.post("/summarize-conclusion")
 def summarize_conclusion(data: SummaryRequest):
@@ -199,6 +209,12 @@ def summarize_conclusion(data: SummaryRequest):
       "issue": "신문사들의 공통된 쟁점을 1문장으로 요약",
       "outlook": "향후 전망 또는 종합 판단을 1문장으로 요약"
     }}
+
+    조건:
+    - 각 항목은 반드시 1문장
+    - 직접 인용 없이 요점을 명확히 서술
+    - 항목 이름은 반드시 "fact", "issue", "outlook"만 사용
+    - 반드시 JSON 형식 유지
 
     기사 원문:
     {context}
@@ -222,13 +238,14 @@ def summarize_conclusion(data: SummaryRequest):
             "error": str(e)
         }
 
-
+# ===================== [스케줄러 등록] =====================
 @app.on_event("startup")
 def start_scheduler():
     scheduler = BackgroundScheduler()
     scheduler.add_job(run_news_job, "interval", hours=1)
     scheduler.start()
+    print("⏰ 스케줄러 시작됨: 1시간마다 뉴스 수집")
 
-
+# ===================== [직접 실행 테스트용] =====================
 if __name__ == "__main__":
     run_news_job()
