@@ -43,10 +43,13 @@ rss_feeds = {
     "세계일보": "https://www.segye.com/Articles/RSSList/segye_recent.xml"
 }
 
+# *** [경로를 전역 상수로 단일화!] ***
+DB_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), "news_articles.db")
+
 # ===================== [DB 보장 함수] =====================
 def ensure_db():
-    db_path = os.path.join(os.path.dirname(__file__), "news_articles.db")
-    conn = sqlite3.connect(db_path)
+    print(f"✅ [ensure_db] DB 파일 경로: {DB_PATH}")
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS news (
@@ -91,13 +94,11 @@ def summarize_kobart(text):
         print(f"❌ 요약 실패: {e}")
         return "요약 실패"
 
-def save_to_sqlite(df, db_path=None, table_name="news"):
-    base_dir = os.path.dirname(__file__)
-    db_path = os.path.join(base_dir, "news_articles.db")
-    print(f"[DB 저장 경로]: {db_path}")
+def save_to_sqlite(df, table_name="news"):
     today = datetime.today().strftime("%Y%m%d")
+    print(f"[DB 저장 경로]: {DB_PATH}")
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         for _, row in df.iterrows():
             try:
@@ -108,6 +109,9 @@ def save_to_sqlite(df, db_path=None, table_name="news"):
             except Exception as row_e:
                 print(f"❌ 개별 저장 실패: {row['title']} | 이유: {row_e}")
         conn.commit()
+        cur.execute(f"SELECT COUNT(*) FROM {table_name}")
+        count = cur.fetchone()[0]
+        print(f"[DB 저장 후 전체 row]: {count}")
         conn.close()
         print("[DB 저장 완료 ✅]")
     except Exception as e:
@@ -121,22 +125,19 @@ def run_news_job():
             print(f"📡 [RSS 요청] 언론사: {source} | URL: {rss_url}")
             feed = feedparser.parse(rss_url)
             print(f"✅ [RSS 수신 완료] {len(feed.entries)}개 기사 발견")
-            for entry in feed.entries[:5]:   # 1개당 5개 기사로 줄임(서버 부하 방지)
+            for entry in feed.entries[:5]:   # 1개당 5개 기사로 (서버 부하 방지, 충분하면 10~20으로)
                 title = entry.title.strip().replace("\n", " ").replace(",", " ")
                 link = entry.link
                 print(f"🔗 기사 제목: {title}")
                 print(f"🧭 기사 링크: {link}")
-
                 content = extract_body(link)
                 print(f"📄 본문 길이: {len(content)}")
-
                 if content == "본문 없음":
                     print("⚠️ 본문 없음 - 요약 생략")
                     summary = "요약 생략 (본문 부족)"
                 else:
                     summary = summarize_kobart(content)
                     print(f"📚 요약 내용: {summary[:50]}...")
-
                 data.append({
                     "source": source,
                     "title": title,
@@ -144,21 +145,20 @@ def run_news_job():
                     "content": content,
                     "summary": summary
                 })
-                time.sleep(0.1)  # Render 무료 플랜 방지, 혹은 조정 가능
-
+                time.sleep(0.1)
         df = pd.DataFrame(data).drop_duplicates(subset="title")
         print(f"💾 최종 저장 대상: {len(df)}건 / 원본: {len(data)}건")
         if df.empty:
             print("❌ 저장할 데이터 없음")
         else:
-            print(f"✅ DB 저장: {db_path}")
             save_to_sqlite(df)
         print(f"[{datetime.now()}] ✅ 뉴스 저장 완료")
     except Exception as e:
         print(f"[🔥 예외 발생] 뉴스 수집 실패: {e}")
 
 def extract_keywords(texts, top_n=5):
-    stopwords = set(["그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수", "으로", "들", "에서", "하다", "한", "대해",
+    stopwords = set([
+        "그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수", "으로", "들", "에서", "하다", "한", "대해",
         "있다", "검색해줘", "세계로", "이끌어줄", "대한","밝혔다", "후보는", "칠한", "지난", "있는", "주요", "로", "은", "는", "이", "가",
         "을", "를", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다",
         "만에", "내일", "당신의", "기사를", "동향과", "정부의","바탕으로", "위한", "위해", "정부는", "장거리요","개최했다","최근","휘두른","마치고"
@@ -167,7 +167,7 @@ def extract_keywords(texts, top_n=5):
         "개방하는","우리가","열린","것을","관련","등록일자","라는","관심","추가", "관심", "활용해","지적","따르면","강한","마친","나오고","방안을",
         "중요하다고","의지를","구체적인","논란뷰티당신의","기사","씨를","기반","맞아","택시에서","크게","강력","사례가","매경","맥락을","발표된","위를",
         "각각","최신","이를","데이터를","국민에게","발견","상승률은"
-                     ])
+    ])
     try:
         tokenized = []
         for text in texts:
@@ -199,10 +199,12 @@ def run_news_direct():
 @app.get("/trending-keywords")
 def get_trending_keywords():
     try:
-        db_path = os.path.join(os.path.dirname(__file__), "news_articles.db")
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(DB_PATH)
         df = pd.read_sql_query("SELECT title, summary FROM news", conn)
         conn.close()
+        print(f"🔍 trending-keywords: news row count={len(df)}")
+        if df.empty:
+            return {"keywords": []}
         combined = (df["title"].fillna("") + " " + df["summary"].fillna(""))
         sampled = random.sample(combined.tolist(), min(20, len(combined)))
         keywords = extract_keywords(sampled, top_n=5)
@@ -214,8 +216,7 @@ def get_trending_keywords():
 @app.get("/search-articles")
 def search_articles(keyword: str = Query(..., min_length=2)):
     try:
-        db_path = os.path.join(os.path.dirname(__file__), "news_articles.db")
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(DB_PATH)
         df = pd.read_sql_query("SELECT source, title, summary, content, link FROM news", conn)
         conn.close()
         df = df.fillna("")
@@ -282,9 +283,9 @@ def summarize_conclusion(data: SummaryRequest):
 @app.get("/debug-news")
 def debug_news():
     try:
-        db_path = os.path.join(os.path.dirname(__file__), "news_articles.db")
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(DB_PATH)
         df = pd.read_sql_query("SELECT source, title, summary, date FROM news ORDER BY date DESC LIMIT 10", conn)
+        print(f"[debug-news] row 수: {df.shape[0]} (경로: {DB_PATH})")
         conn.close()
         return JSONResponse(content=df.to_dict(orient="records"))
     except Exception as e:
