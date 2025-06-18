@@ -31,8 +31,8 @@ app.add_middleware(
 )
 
 model_name = "digit82/kobart-summarization"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir="/tmp")
+model = AutoModelForSeq2SeqLM.from_pretrained(model_name, cache_dir="/tmp")
 
 rss_feeds = {
     "전자신문": "https://rss.etnews.com/Section901.xml",
@@ -53,7 +53,8 @@ def extract_body(url):
         if not body or len(body) < 30 or any(kw in body.lower() for kw in ["삭제", "없음", "404"]):
             return "본문 없음"
         return body
-    except:
+    except Exception as e:
+        print(f"[본문 추출 오류]: {e}")
         return "본문 없음"
 
 def summarize_kobart(text):
@@ -63,17 +64,14 @@ def summarize_kobart(text):
         inputs = tokenizer.encode(text[:1024], return_tensors="pt", truncation=True)
         summary_ids = model.generate(inputs, max_length=256, min_length=20, length_penalty=2.0, num_beams=4, early_stopping=True)
         return tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-    except:
+    except Exception as e:
+        print(f"[요약 실패]: {e}")
         return "요약 실패"
 
 def save_to_sqlite(df, db_path=None, table_name="news"):
     base_dir = os.path.dirname(__file__)
     db_path = os.path.join(base_dir, "news_articles.db")
     today = datetime.today().strftime("%Y%m%d")
-
-    print(f"[현재 작업 디렉토리]: {os.getcwd()}")
-    print(f"[DB 저장 경로]: {db_path}")
-
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
@@ -105,19 +103,29 @@ def run_news_job():
         data = []
         for source, rss_url in rss_feeds.items():
             feed = feedparser.parse(rss_url)
+            if not feed.entries:
+                print(f"⚠️ 피드 없음: {source} - {rss_url}")
+                continue
             for entry in feed.entries[:25]:
-                title = entry.title.strip().replace("\n", " ").replace(",", " ")
-                link = entry.link
-                content = extract_body(link)
-                summary = "요약 생략 (본문 부족)" if content == "본문 없음" else summarize_kobart(content)
-                data.append({
-                    "source": source, "title": title, "link": link,
-                    "content": content, "summary": summary
-                })
-                time.sleep(0.2)
-        df = pd.DataFrame(data).drop_duplicates(subset="title")
-        save_to_sqlite(df)
-        print(f"[{datetime.now()}] ✅ 뉴스 저장 완료")
+                try:
+                    title = entry.title.strip().replace("\n", " ").replace(",", " ")
+                    link = entry.link
+                    content = extract_body(link)
+                    summary = "요약 생략 (본문 부족)" if content == "본문 없음" else summarize_kobart(content)
+                    data.append({
+                        "source": source, "title": title, "link": link,
+                        "content": content, "summary": summary
+                    })
+                    print(f"📌 기사 수집: {title}")
+                    time.sleep(0.2)
+                except Exception as e:
+                    print(f"[기사 수집 오류]: {e}")
+        if data:
+            df = pd.DataFrame(data).drop_duplicates(subset="title")
+            save_to_sqlite(df)
+            print(f"[{datetime.now()}] ✅ 뉴스 저장 완료")
+        else:
+            print("❌ 저장할 뉴스 없음")
     except Exception as e:
         print(f"[뉴스 수집 실패 ❌]: {e}")
 
