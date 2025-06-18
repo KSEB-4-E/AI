@@ -1,4 +1,4 @@
-from fastapi import FastAPI, BackgroundTasks, Query
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import openai
+from fastapi.responses import JSONResponse
 
 # ===================== [초기 설정] =====================
 load_dotenv()
@@ -72,32 +73,39 @@ def extract_body(url):
         if not body or len(body) < 30 or any(kw in body.lower() for kw in ["삭제", "없음", "404"]):
             return "본문 없음"
         return body
-    except:
+    except Exception as e:
+        print(f"[본문 추출 오류]: {e}")
         return "본문 없음"
 
 def summarize_kobart(text):
     try:
+        print("✏️ KoBART 요약 시작")
         if not text.strip():
             return "요약 없음"
         inputs = tokenizer.encode(text[:1024], return_tensors="pt", truncation=True)
         summary_ids = model.generate(inputs, max_length=256, min_length=20, length_penalty=2.0, num_beams=4, early_stopping=True)
-        return tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-    except:
+        result = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+        print("✅ 요약 완료")
+        return result
+    except Exception as e:
+        print(f"❌ 요약 실패: {e}")
         return "요약 실패"
 
 def save_to_sqlite(df, db_path=None, table_name="news"):
     base_dir = os.path.dirname(__file__)
     db_path = os.path.join(base_dir, "news_articles.db")
     today = datetime.today().strftime("%Y%m%d")
-
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         for _, row in df.iterrows():
-            cur.execute(f"""
-                INSERT INTO {table_name} (source, title, link, content, summary, date)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (row['source'], row['title'], row['link'], row['content'], row['summary'], today))
+            try:
+                cur.execute(f"""
+                    INSERT INTO {table_name} (source, title, link, content, summary, date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (row['source'], row['title'], row['link'], row['content'], row['summary'], today))
+            except Exception as row_e:
+                print(f"❌ 개별 저장 실패: {row['title']} | 이유: {row_e}")
         conn.commit()
         conn.close()
         print("[DB 저장 완료 ✅]")
@@ -107,14 +115,12 @@ def save_to_sqlite(df, db_path=None, table_name="news"):
 def run_news_job():
     try:
         print(f"\n[{datetime.now()}] 📰 뉴스 수집 시작")
-
         data = []
         for source, rss_url in rss_feeds.items():
             print(f"📡 [RSS 요청] 언론사: {source} | URL: {rss_url}")
             feed = feedparser.parse(rss_url)
             print(f"✅ [RSS 수신 완료] {len(feed.entries)}개 기사 발견")
-
-            for entry in feed.entries[:25]:
+            for entry in feed.entries[:5]:   # 1개당 5개 기사로 줄임(서버 부하 방지)
                 title = entry.title.strip().replace("\n", " ").replace(",", " ")
                 link = entry.link
                 print(f"🔗 기사 제목: {title}")
@@ -128,7 +134,7 @@ def run_news_job():
                     summary = "요약 생략 (본문 부족)"
                 else:
                     summary = summarize_kobart(content)
-                    print(f"📚 요약 내용: {summary[:50]}...")  # 요약 앞 50자만 출력
+                    print(f"📚 요약 내용: {summary[:50]}...")
 
                 data.append({
                     "source": source,
@@ -137,8 +143,7 @@ def run_news_job():
                     "content": content,
                     "summary": summary
                 })
-
-                time.sleep(0.2)
+                time.sleep(0.1)  # Render 무료 플랜 방지, 혹은 조정 가능
 
         df = pd.DataFrame(data).drop_duplicates(subset="title")
         print(f"📊 누적 수집된 기사 수: {len(data)}")
@@ -149,9 +154,7 @@ def run_news_job():
         else:
             print(f"✅ DB 저장 시작 - 예시 제목: {df.iloc[0]['title']}")
         save_to_sqlite(df)
-
         print(f"[{datetime.now()}] ✅ 뉴스 저장 완료")
-
     except Exception as e:
         print(f"[🔥 예외 발생] 뉴스 수집 실패: {e}")
 
@@ -181,14 +184,18 @@ def extract_keywords(texts, top_n=5):
         keywords = [(feature_names[i], int(word_counts[i])) for i in range(len(feature_names))]
         keywords.sort(key=lambda x: x[1], reverse=True)
         return [{"keyword": w, "count": c} for w, c in keywords[:top_n]]
-    except:
+    except Exception as e:
+        print(f"❌ 키워드 추출 오류: {e}")
         return []
 
 # ===================== [FastAPI 엔드포인트] =====================
 @app.get("/run-news")
-def trigger_run(background_tasks: BackgroundTasks):
-    background_tasks.add_task(run_news_job)
-    return {"message": "뉴스 수집을 시작했습니다."}
+def run_news_direct():
+    try:
+        run_news_job()
+        return {"message": "뉴스 수집을 즉시 완료했습니다."}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/trending-keywords")
 def get_trending_keywords():
@@ -198,10 +205,11 @@ def get_trending_keywords():
         df = pd.read_sql_query("SELECT title, summary FROM news", conn)
         conn.close()
         combined = (df["title"].fillna("") + " " + df["summary"].fillna(""))
-        sampled = random.sample(combined.tolist(), min(40, len(combined)))
+        sampled = random.sample(combined.tolist(), min(20, len(combined)))
         keywords = extract_keywords(sampled, top_n=5)
         return {"keywords": keywords}
     except Exception as e:
+        print(f"❌ trending-keywords 오류: {e}")
         return {"error": str(e)}
 
 @app.get("/search-articles")
@@ -224,6 +232,7 @@ def search_articles(keyword: str = Query(..., min_length=2)):
             "articles": articles[["title", "summary", "content", "source", "link"]].to_dict(orient="records")
         }
     except Exception as e:
+        print(f"❌ search-articles 오류: {e}")
         return {"error": str(e)}
 
 class SummaryRequest(BaseModel):
@@ -236,22 +245,18 @@ def summarize_conclusion(data: SummaryRequest):
     context = "\n".join(data.contents[:3])
     prompt = f"""
     다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
-
     이 기사들의 공통된 주제를 다음 3가지 항목으로 간결히 정리해줘.
-
     요약 형식은 다음 JSON 형태 그대로 출력해줘:
     {{
       "fact": "핵심 사실을 1문장으로 요약",
       "issue": "신문사들의 공통된 쟁점을 1문장으로 요약",
       "outlook": "향후 전망 또는 종합 판단을 1문장으로 요약"
     }}
-
     조건:
     - 각 항목은 반드시 1문장
     - 직접 인용 없이 요점을 명확히 서술
     - 항목 이름은 반드시 "fact", "issue", "outlook"만 사용
     - 반드시 JSON 형식 유지
-
     기사 원문:
     {context}
     """.strip()
@@ -268,11 +273,24 @@ def summarize_conclusion(data: SummaryRequest):
         result = response.choices[0].message.content.strip()
         return {"keyword": keyword, "summary": json.loads(result)}
     except Exception as e:
+        print(f"❌ summarize-conclusion 오류: {e}")
         return {
             "keyword": keyword,
             "summary": {"fact": "요약 실패", "issue": "요약 실패", "outlook": "요약 실패"},
             "error": str(e)
         }
+
+@app.get("/debug-news")
+def debug_news():
+    try:
+        db_path = os.path.join(os.path.dirname(__file__), "news_articles.db")
+        conn = sqlite3.connect(db_path)
+        df = pd.read_sql_query("SELECT source, title, summary, date FROM news ORDER BY date DESC LIMIT 10", conn)
+        conn.close()
+        return JSONResponse(content=df.to_dict(orient="records"))
+    except Exception as e:
+        print(f"❌ debug-news 오류: {e}")
+        return {"error": str(e)}
 
 # ===================== [스케줄러 등록] =====================
 @app.on_event("startup")
@@ -282,19 +300,6 @@ def start_scheduler():
     scheduler.add_job(run_news_job, "interval", hours=1)
     scheduler.start()
     print("⏰ 스케줄러 시작됨: 1시간마다 뉴스 수집")
-
-from fastapi.responses import JSONResponse
-
-@app.get("/debug-news")
-def debug_news():
-    try:
-        db_path = os.path.join(os.path.dirname(__file__), "news_articles.db")
-        conn = sqlite3.connect(db_path)
-        df = pd.read_sql_query("SELECT source, title, summary, date FROM news ORDER BY date DESC LIMIT 5", conn)
-        conn.close()
-        return JSONResponse(content=df.to_dict(orient="records"))
-    except Exception as e:
-        return {"error": str(e)}
 
 if __name__ == "__main__":
     run_news_job()
