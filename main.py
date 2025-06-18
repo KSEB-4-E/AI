@@ -254,5 +254,18 @@ def start_scheduler():
     scheduler.start()
     print("⏰ 스케줄러 시작됨: 1시간마다 뉴스 수집")
 
+from fastapi.responses import JSONResponse
+
+@app.get("/debug-news")
+def debug_news():
+    try:
+        db_path = os.path.join(os.path.dirname(__file__), "news_articles.db")
+        conn = sqlite3.connect(db_path)
+        df = pd.read_sql_query("SELECT source, title, summary, date FROM news ORDER BY date DESC LIMIT 5", conn)
+        conn.close()
+        return JSONResponse(content=df.to_dict(orient="records"))
+    except Exception as e:
+        return {"error": str(e)}
+
 if __name__ == "__main__":
     run_news_job()
