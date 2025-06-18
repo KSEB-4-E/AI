@@ -10,3 +10,4 @@ def search(q: Optional[str] = Query(None)):
         "results": [f"🔍 '{q}'에 대한 가짜 검색 결과입니다.", "예시 1", "예시 2"],
         "count": 3
     }
+
