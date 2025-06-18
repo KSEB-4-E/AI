@@ -6,6 +6,7 @@ feedparser
 requests
 beautifulsoup4
 scikit-learn
+transformers
 pandas
 apscheduler
 openai>=1.0.0

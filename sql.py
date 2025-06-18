@@ -1,4 +1,4 @@
-mport mysql.connector
+import mysql.connector
 
 # ✅ MySQL 접속 정보
 conn = mysql.connector.connect(
