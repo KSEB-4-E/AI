@@ -94,6 +94,7 @@ def summarize_kobart(text):
 def save_to_sqlite(df, db_path=None, table_name="news"):
     base_dir = os.path.dirname(__file__)
     db_path = os.path.join(base_dir, "news_articles.db")
+    print(f"[DB 저장 경로]: {db_path}")
     today = datetime.today().strftime("%Y%m%d")
     try:
         conn = sqlite3.connect(db_path)
@@ -146,14 +147,12 @@ def run_news_job():
                 time.sleep(0.1)  # Render 무료 플랜 방지, 혹은 조정 가능
 
         df = pd.DataFrame(data).drop_duplicates(subset="title")
-        print(f"📊 누적 수집된 기사 수: {len(data)}")
-        print(f"📦 최종 저장 대상 뉴스 수 (중복 제거 후): {len(df)}")
+        print(f"💾 최종 저장 대상: {len(df)}건 / 원본: {len(data)}건")
         if df.empty:
-            print("❌ 저장할 뉴스가 없습니다. 종료합니다.")
-            return
+            print("❌ 저장할 데이터 없음")
         else:
-            print(f"✅ DB 저장 시작 - 예시 제목: {df.iloc[0]['title']}")
-        save_to_sqlite(df)
+            print(f"✅ DB 저장: {db_path}")
+            save_to_sqlite(df)
         print(f"[{datetime.now()}] ✅ 뉴스 저장 완료")
     except Exception as e:
         print(f"[🔥 예외 발생] 뉴스 수집 실패: {e}")
