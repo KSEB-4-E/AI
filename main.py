@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, BackgroundTasks   # BackgroundTasks 추가
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
@@ -102,7 +102,6 @@ def save_to_sqlite(df, db_path=None, table_name="news", max_articles=150):
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
-        # 현재 저장된 뉴스 개수
         cur.execute(f"SELECT COUNT(*) FROM {table_name}")
         current_count = cur.fetchone()[0]
         new_count = len(df)
@@ -191,12 +190,9 @@ def extract_keywords_kiwi(texts, top_n=5):
 
 # ===================== [FastAPI 엔드포인트] =====================
 @app.get("/run-news")
-def run_news_direct():
-    try:
-        run_news_job()
-        return {"message": "뉴스 수집을 즉시 완료했습니다."}
-    except Exception as e:
-        return {"error": str(e)}
+def run_news_direct(background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_news_job)
+    return {"message": "뉴스 수집을 백그라운드에서 시작했습니다."}
 
 @app.get("/trending-keywords")
 def get_trending_keywords():
