@@ -17,16 +17,20 @@ import re
 from bs4 import BeautifulSoup
 from datetime import datetime
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import openai
 from fastapi.responses import JSONResponse
 
 # ===================== [초기 설정] =====================
 load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
+
 model_name = "digit82/kobart-summarization"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
@@ -56,6 +60,7 @@ def ensure_db():
     """)
     conn.commit()
     conn.close()
+    print("✅ news 테이블 확인 또는 생성 완료")
 
 # ===================== [핵심 기능] =====================
 def extract_body(url):
@@ -69,63 +74,97 @@ def extract_body(url):
             return "본문 없음"
         return body
     except Exception as e:
+        print(f"[본문 추출 오류]: {e}")
         return "본문 없음"
 
 def summarize_kobart(text):
     try:
+        print("✏️ KoBART 요약 시작")
         if not text.strip():
             return "요약 없음"
         inputs = tokenizer.encode(text[:1024], return_tensors="pt", truncation=True)
         summary_ids = model.generate(inputs, max_length=256, min_length=20, length_penalty=2.0, num_beams=4, early_stopping=True)
-        return tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+        result = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+        print("✅ 요약 완료")
+        return result
     except Exception as e:
+        print(f"❌ 요약 실패: {e}")
         return "요약 실패"
 
-def save_to_sqlite(df, db_path=None, table_name="news"):
+def save_to_sqlite(df, db_path=None, table_name="news", max_articles=150):
     base_dir = os.path.dirname(__file__)
     db_path = os.path.join(base_dir, "news_articles.db")
+    print(f"[DB 저장 경로]: {db_path}")
     today = datetime.today().strftime("%Y%m%d")
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
-        # 저장 전 DB가 300개 초과면 오래된 기사 삭제
+        # 현재 저장된 뉴스 개수
         cur.execute(f"SELECT COUNT(*) FROM {table_name}")
-        count = cur.fetchone()[0]
+        current_count = cur.fetchone()[0]
+        # 새로 저장할 기사 수
+        new_count = len(df)
+        # 삭제해야 할 오래된 기사 수 계산
+        delete_count = max(0, (current_count + new_count) - max_articles)
+        if delete_count > 0:
+            cur.execute(f"DELETE FROM {table_name} WHERE rowid IN (SELECT rowid FROM {table_name} ORDER BY date, rowid LIMIT ?)", (delete_count,))
+            print(f"🗑️ {delete_count}개 오래된 기사 삭제")
+        # 기사 저장
         for _, row in df.iterrows():
-            # 300개 이상이면 오래된 기사 삭제
-            cur.execute(f"SELECT COUNT(*) FROM {table_name}")
-            count = cur.fetchone()[0]
-            if count >= 300:
-                # 오래된 기사부터 삭제
-                cur.execute(f"DELETE FROM {table_name} WHERE rowid IN (SELECT rowid FROM {table_name} ORDER BY date, rowid LIMIT 1)")
-            cur.execute(f"""
-                INSERT INTO {table_name} (source, title, link, content, summary, date)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (row['source'], row['title'], row['link'], row['content'], row['summary'], today))
+            try:
+                cur.execute(f"""
+                    INSERT INTO {table_name} (source, title, link, content, summary, date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (row['source'], row['title'], row['link'], row['content'], row['summary'], today))
+            except Exception as row_e:
+                print(f"❌ 개별 저장 실패: {row['title']} | 이유: {row_e}")
         conn.commit()
         conn.close()
+        print("[DB 저장 완료 ✅]")
     except Exception as e:
         print(f"[DB 저장 실패 ❌]: {e}")
 
 def run_news_job():
     try:
+        print(f"\n[{datetime.now()}] 📰 뉴스 수집 시작")
         data = []
+        # 총 기사 150개까지만 수집
+        per_feed = max(1, 150 // len(rss_feeds))  # 언론사별 균등하게 나눔
         for source, rss_url in rss_feeds.items():
+            print(f"📡 [RSS 요청] 언론사: {source} | URL: {rss_url}")
             feed = feedparser.parse(rss_url)
-            for entry in feed.entries[:25]:  # 언론사별 최대 25개씩
+            print(f"✅ [RSS 수신 완료] {len(feed.entries)}개 기사 발견")
+            for entry in feed.entries[:per_feed]:
                 title = entry.title.strip().replace("\n", " ").replace(",", " ")
                 link = entry.link
+                print(f"🔗 기사 제목: {title}")
+                print(f"🧭 기사 링크: {link}")
                 content = extract_body(link)
-                summary = "요약 생략 (본문 부족)" if content == "본문 없음" else summarize_kobart(content)
+                print(f"📄 본문 길이: {len(content)}")
+                if content == "본문 없음":
+                    print("⚠️ 본문 없음 - 요약 생략")
+                    summary = "요약 생략 (본문 부족)"
+                else:
+                    summary = summarize_kobart(content)
+                    print(f"📚 요약 내용: {summary[:50]}...")
                 data.append({
-                    "source": source, "title": title, "link": link,
-                    "content": content, "summary": summary
+                    "source": source,
+                    "title": title,
+                    "link": link,
+                    "content": content,
+                    "summary": summary
                 })
-                time.sleep(0.05)
+                time.sleep(0.1)
         df = pd.DataFrame(data).drop_duplicates(subset="title")
-        save_to_sqlite(df)
+        print(f"💾 최종 저장 대상: {len(df)}건 / 원본: {len(data)}건")
+        if df.empty:
+            print("❌ 저장할 데이터 없음")
+        else:
+            print(f"✅ DB 저장")
+            save_to_sqlite(df)
+        print(f"[{datetime.now()}] ✅ 뉴스 저장 완료")
     except Exception as e:
-        print(f"[뉴스 수집 실패 ❌]: {e}")
+        print(f"[🔥 예외 발생] 뉴스 수집 실패: {e}")
 
 def extract_keywords(texts, top_n=5):
     stopwords = set([
@@ -137,7 +176,7 @@ def extract_keywords(texts, top_n=5):
         "타더니","전망도","등을","받고","기업들의","없는","가능성까지","개에","다시","검색해줘최근","마리","모두","있다고","알림을","함께","내용을",
         "개방하는","우리가","열린","것을","관련","등록일자","라는","관심","추가", "관심", "활용해","지적","따르면","강한","마친","나오고","방안을",
         "중요하다고","의지를","구체적인","논란뷰티당신의","기사","씨를","기반","맞아","택시에서","크게","강력","사례가","매경","맥락을","발표된","위를",
-        "각각","최신","이를","데이터를","국민에게","발견","상승률은","다양한","대폭"
+        "각각","최신","이를","데이터를","국민에게","발견","상승률은","다양한","대폭","번째","최대"
     ])
     try:
         tokenized = []
@@ -154,7 +193,8 @@ def extract_keywords(texts, top_n=5):
         keywords = [(feature_names[i], int(word_counts[i])) for i in range(len(feature_names))]
         keywords.sort(key=lambda x: x[1], reverse=True)
         return [{"keyword": w, "count": c} for w, c in keywords[:top_n]]
-    except:
+    except Exception as e:
+        print(f"❌ 키워드 추출 오류: {e}")
         return []
 
 # ===================== [FastAPI 엔드포인트] =====================
@@ -171,14 +211,16 @@ def get_trending_keywords():
     try:
         db_path = os.path.join(os.path.dirname(__file__), "news_articles.db")
         conn = sqlite3.connect(db_path)
-        # 최신 50개 기사만 뽑아서 키워드 추출
-        df = pd.read_sql_query("SELECT title, summary FROM news ORDER BY date DESC, rowid DESC LIMIT 50", conn)
+        df = pd.read_sql_query("SELECT title, summary FROM news", conn)
         conn.close()
-        combined = (df["title"].fillna("") + " " + df["summary"].fillna(""))
-        sampled = combined.tolist()
-        keywords = extract_keywords(sampled, top_n=5)
+        # 최근 150개 기사에서 랜덤 30개 뽑기
+        recent = df.tail(150)
+        sampled = random.sample(recent.index.tolist(), min(30, len(recent)))
+        combined = (df.loc[sampled, "title"].fillna("") + " " + df.loc[sampled, "summary"].fillna(""))
+        keywords = extract_keywords(combined.tolist(), top_n=5)
         return {"keywords": keywords}
     except Exception as e:
+        print(f"❌ trending-keywords 오류: {e}")
         return {"error": str(e)}
 
 @app.get("/search-articles")
@@ -201,6 +243,7 @@ def search_articles(keyword: str = Query(..., min_length=2)):
             "articles": articles[["title", "summary", "content", "source", "link"]].to_dict(orient="records")
         }
     except Exception as e:
+        print(f"❌ search-articles 오류: {e}")
         return {"error": str(e)}
 
 class SummaryRequest(BaseModel):
@@ -241,6 +284,7 @@ def summarize_conclusion(data: SummaryRequest):
         result = response.choices[0].message.content.strip()
         return {"keyword": keyword, "summary": json.loads(result)}
     except Exception as e:
+        print(f"❌ summarize-conclusion 오류: {e}")
         return {
             "keyword": keyword,
             "summary": {"fact": "요약 실패", "issue": "요약 실패", "outlook": "요약 실패"},
@@ -256,6 +300,7 @@ def debug_news():
         conn.close()
         return JSONResponse(content=df.to_dict(orient="records"))
     except Exception as e:
+        print(f"❌ debug-news 오류: {e}")
         return {"error": str(e)}
 
 # ===================== [스케줄러 등록] =====================
