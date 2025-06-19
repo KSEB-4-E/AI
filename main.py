@@ -66,16 +66,41 @@ def ensure_db():
     print("✅ news 테이블 확인 또는 생성 완료")
 
 # ===================== [핵심 기능] =====================
-def extract_body(url):
+def extract_body(url, source=None):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, timeout=5, headers=headers)
         soup = BeautifulSoup(res.text, "html.parser")
-        paragraphs = soup.find_all("p")
-        body = "\n".join(p.get_text().strip() for p in paragraphs if p.get_text().strip())
-        if not body or len(body) < 30 or any(kw in body.lower() for kw in ["삭제", "없음", "404"]):
+
+        # 신문사별 본문 selector 적용
+        if source == "한겨레":
+            article = soup.select_one("div.article-text")
+        elif source == "전자신문":
+            article = soup.select_one("#articleBody")
+        elif source == "SBS":
+            article = soup.select_one("div.text_area")  # 실제 selector 확인 필요
+        elif source == "매일경제":
+            article = soup.select_one("div#article_body")
+        elif source == "세계일보":
+            article = soup.select_one("div#article_txt")
+        else:
+            article = None
+
+        if article:
+            body = article.get_text(separator="\n").strip()
+        else:
+            # fallback: 모든 <p>
+            paragraphs = soup.find_all("p")
+            body = "\n".join(p.get_text().strip() for p in paragraphs if p.get_text().strip())
+
+        # 중복/불필요 부분 정제
+        lines = [line.strip() for line in body.splitlines() if len(line.strip()) > 20]
+        # 너무 짧거나 제목/중복/비문장(광고, 기타) 라인은 제거
+        lines = [line for line in lines if "기자" not in line and "무단전재" not in line]
+        clean_body = "\n".join(lines)
+        if not clean_body or len(clean_body) < 30:
             return "본문 없음"
-        return body
+        return clean_body
     except Exception as e:
         print(f"[본문 추출 오류]: {e}")
         return "본문 없음"
@@ -177,7 +202,7 @@ def extract_keywords_kiwi(texts, top_n=5):
         "뉴스", "기자", "한국", "정부", "오늘", "제공", "관련", "보도", "사실", "통해", "위해",
         "등", "이", "그", "저", "것", "수", "명", "제", "시", "때", "후", "위", "앞", "뒤",
         "중", "내", "밖", "이후", "위해", "대해", "대한", "에", "와", "과", "는", "이", "가", "을", "를",
-        "로", "으로", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다",
+        "로", "으로", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다", "업무", "보고"
         # 추가 필요시 계속 보며 관리!
     ])
     all_nouns = []
@@ -202,8 +227,7 @@ def get_trending_keywords():
         df = pd.read_sql_query("SELECT title, summary FROM news", conn)
         conn.close()
         recent = df.tail(150)
-        sampled = random.sample(recent.index.tolist(), min(30, len(recent)))
-        combined = (df.loc[sampled, "title"].fillna("") + " " + df.loc[sampled, "summary"].fillna(""))
+        combined = (recent["title"].fillna("") + " " + recent["summary"].fillna(""))
         keywords = extract_keywords_kiwi(combined.tolist(), top_n=5)
         return {"keywords": keywords}
     except Exception as e:
@@ -242,20 +266,39 @@ def summarize_conclusion(data: SummaryRequest):
     keyword = data.keyword
     context = "\n".join(data.contents[:3])
     prompt = f"""
-    다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
-    이 기사들의 공통된 주제를 다음 3가지 항목으로 간결히 정리해줘.
-    요약 형식은 다음 JSON 형태 그대로 출력해줘:
+    당신은 다수의 뉴스 기사를 분석해 본질적 쟁점을 도출하는 뉴스 요약 전문가입니다.
+
+    아래는 '{keyword}'와 관련된 여러 언론사의 기사 원문입니다.
+    기사의 중복 표현이나 단순 사실 나열이 아닌, **핵심만 간결하게** 정리해 주세요.
+
+    다음 3가지 항목을 기준으로, **각 항목을 반드시 1문장**으로 정리해 주세요.
+
+    1. "fact":  
+        - 여러 기사에 반복적으로 등장하는 **가장 중요한 핵심 사실**을 명확하게,  
+        - **팩트(객관적 진술)**만 담아 요약
+
+    2. "issue":  
+        - 해당 뉴스 이슈의 **주요 쟁점/갈등/논란/사회적 반향**을 요약  
+        - 언론사들의 공통적으로 주목한 **문제점이나 논쟁**을 한 문장으로 명확하게 서술
+
+    3. "outlook":  
+        - 전문가 또는 언론들이 제시한 **미래 전망, 영향, 시사점**을  
+        - **비판적/통합적 관점**에서 한 문장으로 정리
+
+    **형식**
+    - 아래 JSON 예시처럼, 각 항목 이름은 "fact", "issue", "outlook" 그대로, 반드시 JSON 형식으로만 답변
+    - 직접 인용 없이 당신의 언어로 요약, 절대 기사 문장 그대로 복사 금지
+    - 모호하거나 과장된 표현, 추측은 지양
+    - 예측/전망(outlook)은 기사 내에 근거가 있을 때만 제시
+
+    예시:
     {{
-      "fact": "핵심 사실을 1문장으로 요약",
-      "issue": "신문사들의 공통된 쟁점을 1문장으로 요약",
-      "outlook": "향후 전망 또는 종합 판단을 1문장으로 요약"
+      "fact": "...",
+      "issue": "...",
+      "outlook": "..."
     }}
-    조건:
-    - 각 항목은 반드시 1문장
-    - 직접 인용 없이 요점을 명확히 서술
-    - 항목 이름은 반드시 "fact", "issue", "outlook"만 사용
-    - 반드시 JSON 형식 유지
-    기사 원문:
+
+    [기사 원문 모음]
     {context}
     """.strip()
 
