@@ -19,6 +19,7 @@ from datetime import datetime
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import openai
 from fastapi.responses import JSONResponse
+from kiwipiepy import Kiwi
 
 # ===================== [초기 설정] =====================
 load_dotenv()
@@ -42,6 +43,8 @@ rss_feeds = {
     "매일경제": "https://www.mk.co.kr/rss/40300001/",
     "세계일보": "https://www.segye.com/Articles/RSSList/segye_recent.xml"
 }
+
+kiwi = Kiwi()
 
 # ===================== [DB 보장 함수] =====================
 def ensure_db():
@@ -102,14 +105,11 @@ def save_to_sqlite(df, db_path=None, table_name="news", max_articles=150):
         # 현재 저장된 뉴스 개수
         cur.execute(f"SELECT COUNT(*) FROM {table_name}")
         current_count = cur.fetchone()[0]
-        # 새로 저장할 기사 수
         new_count = len(df)
-        # 삭제해야 할 오래된 기사 수 계산
         delete_count = max(0, (current_count + new_count) - max_articles)
         if delete_count > 0:
             cur.execute(f"DELETE FROM {table_name} WHERE rowid IN (SELECT rowid FROM {table_name} ORDER BY date, rowid LIMIT ?)", (delete_count,))
             print(f"🗑️ {delete_count}개 오래된 기사 삭제")
-        # 기사 저장
         for _, row in df.iterrows():
             try:
                 cur.execute(f"""
@@ -128,8 +128,7 @@ def run_news_job():
     try:
         print(f"\n[{datetime.now()}] 📰 뉴스 수집 시작")
         data = []
-        # 총 기사 150개까지만 수집
-        per_feed = max(1, 150 // len(rss_feeds))  # 언론사별 균등하게 나눔
+        per_feed = max(1, 150 // len(rss_feeds))
         for source, rss_url in rss_feeds.items():
             print(f"📡 [RSS 요청] 언론사: {source} | URL: {rss_url}")
             feed = feedparser.parse(rss_url)
@@ -166,36 +165,29 @@ def run_news_job():
     except Exception as e:
         print(f"[🔥 예외 발생] 뉴스 수집 실패: {e}")
 
-def extract_keywords(texts, top_n=5):
+# === 키위 기반 명사 추출 & 키워드 함수 ===
+def extract_nouns_kiwi(text):
+    nouns = []
+    for word, pos, _, _ in kiwi.analyze(text)[0][0]:
+        if pos in ("NNG", "NNP"):
+            nouns.append(word)
+    return nouns
+
+def extract_keywords_kiwi(texts, top_n=5):
     stopwords = set([
-        "그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수", "으로", "들", "에서", "하다", "한", "대해",
-        "있다", "검색해줘", "세계로", "이끌어줄", "대한","밝혔다", "후보는", "칠한", "지난", "있는", "주요", "로", "은", "는", "이", "가",
-        "을", "를", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다",
-        "만에", "내일", "당신의", "기사를", "동향과", "정부의","바탕으로", "위한", "위해", "정부는", "장거리요","개최했다","최근","휘두른","마치고"
-        ,"빠른","통해","무슨","있으며","기술을","탐험과","시장의","숨져","네이버의","명의","것이","지원을","커지고","기업의","씨가","문제를","이후",
-        "타더니","전망도","등을","받고","기업들의","없는","가능성까지","개에","다시","검색해줘최근","마리","모두","있다고","알림을","함께","내용을",
-        "개방하는","우리가","열린","것을","관련","등록일자","라는","관심","추가", "관심", "활용해","지적","따르면","강한","마친","나오고","방안을",
-        "중요하다고","의지를","구체적인","논란뷰티당신의","기사","씨를","기반","맞아","택시에서","크게","강력","사례가","매경","맥락을","발표된","위를",
-        "각각","최신","이를","데이터를","국민에게","발견","상승률은","다양한","대폭","번째","최대"
+        "뉴스", "기자", "한국", "정부", "오늘", "제공", "관련", "보도", "사실", "통해", "위해",
+        "등", "이", "그", "저", "것", "수", "명", "제", "시", "때", "후", "위", "앞", "뒤",
+        "중", "내", "밖", "이후", "위해", "대해", "대한", "에", "와", "과", "는", "이", "가", "을", "를",
+        "로", "으로", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다",
+        # 추가 필요시 계속 보며 관리!
     ])
-    try:
-        tokenized = []
-        for text in texts:
-            words = re.findall(r"[가-힣]{2,}", text)
-            words = [w for w in words if w not in stopwords]
-            tokenized.append(" ".join(words))
-        if not any(tokenized):
-            return []
-        vectorizer = TfidfVectorizer()
-        X = vectorizer.fit_transform(tokenized)
-        feature_names = vectorizer.get_feature_names_out()
-        word_counts = (X > 0).sum(axis=0).A1
-        keywords = [(feature_names[i], int(word_counts[i])) for i in range(len(feature_names))]
-        keywords.sort(key=lambda x: x[1], reverse=True)
-        return [{"keyword": w, "count": c} for w, c in keywords[:top_n]]
-    except Exception as e:
-        print(f"❌ 키워드 추출 오류: {e}")
-        return []
+    all_nouns = []
+    for text in texts:
+        nouns = extract_nouns_kiwi(text)
+        all_nouns.extend([n for n in nouns if n not in stopwords and len(n) > 1])
+    from collections import Counter
+    counter = Counter(all_nouns)
+    return [{"keyword": w, "count": c} for w, c in counter.most_common(top_n)]
 
 # ===================== [FastAPI 엔드포인트] =====================
 @app.get("/run-news")
@@ -213,11 +205,10 @@ def get_trending_keywords():
         conn = sqlite3.connect(db_path)
         df = pd.read_sql_query("SELECT title, summary FROM news", conn)
         conn.close()
-        # 최근 150개 기사에서 랜덤 30개 뽑기
         recent = df.tail(150)
         sampled = random.sample(recent.index.tolist(), min(30, len(recent)))
         combined = (df.loc[sampled, "title"].fillna("") + " " + df.loc[sampled, "summary"].fillna(""))
-        keywords = extract_keywords(combined.tolist(), top_n=5)
+        keywords = extract_keywords_kiwi(combined.tolist(), top_n=5)
         return {"keywords": keywords}
     except Exception as e:
         print(f"❌ trending-keywords 오류: {e}")
