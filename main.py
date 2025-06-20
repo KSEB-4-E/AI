@@ -1,9 +1,8 @@
-from fastapi import FastAPI, Query, BackgroundTasks   # BackgroundTasks 추가
+from fastapi import FastAPI, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 from apscheduler.schedulers.background import BackgroundScheduler
-from sklearn.feature_extraction.text import TfidfVectorizer
 from dotenv import load_dotenv
 import pandas as pd
 import feedparser
@@ -20,6 +19,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import openai
 from fastapi.responses import JSONResponse
 from kiwipiepy import Kiwi
+import threading
 
 # ===================== [초기 설정] =====================
 load_dotenv()
@@ -65,14 +65,14 @@ def ensure_db():
     conn.close()
     print("✅ news 테이블 확인 또는 생성 완료")
 
-# ===================== [핵심 기능] =====================
+# ===================== [본문 크롤링 (selector 적용)] =====================
 def extract_body(url, source=None):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, timeout=5, headers=headers)
+        res = requests.get(url, timeout=7, headers=headers)
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # 신문사별 본문 selector 적용
+        # 신문사별 selector (지속적으로 최신화 필요!)
         if source == "한겨레":
             article = soup.select_one("div.article-text")
         elif source == "전자신문":
@@ -89,13 +89,12 @@ def extract_body(url, source=None):
         if article:
             body = article.get_text(separator="\n").strip()
         else:
-            # fallback: 모든 <p>
+            # fallback: <p> 태그 모두 합치기
             paragraphs = soup.find_all("p")
             body = "\n".join(p.get_text().strip() for p in paragraphs if p.get_text().strip())
 
-        # 중복/불필요 부분 정제
+        # 불필요 줄 필터링/정제
         lines = [line.strip() for line in body.splitlines() if len(line.strip()) > 20]
-        # 너무 짧거나 제목/중복/비문장(광고, 기타) 라인은 제거
         lines = [line for line in lines if "기자" not in line and "무단전재" not in line]
         clean_body = "\n".join(lines)
         if not clean_body or len(clean_body) < 30:
@@ -119,6 +118,7 @@ def summarize_kobart(text):
         print(f"❌ 요약 실패: {e}")
         return "요약 실패"
 
+# ===================== [DB 저장] =====================
 def save_to_sqlite(df, db_path=None, table_name="news", max_articles=150):
     base_dir = os.path.dirname(__file__)
     db_path = os.path.join(base_dir, "news_articles.db")
@@ -148,7 +148,13 @@ def save_to_sqlite(df, db_path=None, table_name="news", max_articles=150):
     except Exception as e:
         print(f"[DB 저장 실패 ❌]: {e}")
 
+# ===================== [중복 실행 방지 락] =====================
+run_lock = threading.Lock()
+
 def run_news_job():
+    if not run_lock.acquire(blocking=False):
+        print("⚠️ 이미 뉴스 수집이 진행중입니다. 중복 실행 방지.")
+        return
     try:
         print(f"\n[{datetime.now()}] 📰 뉴스 수집 시작")
         data = []
@@ -162,7 +168,7 @@ def run_news_job():
                 link = entry.link
                 print(f"🔗 기사 제목: {title}")
                 print(f"🧭 기사 링크: {link}")
-                content = extract_body(link)
+                content = extract_body(link, source=source)
                 print(f"📄 본문 길이: {len(content)}")
                 if content == "본문 없음":
                     print("⚠️ 본문 없음 - 요약 생략")
@@ -188,6 +194,8 @@ def run_news_job():
         print(f"[{datetime.now()}] ✅ 뉴스 저장 완료")
     except Exception as e:
         print(f"[🔥 예외 발생] 뉴스 수집 실패: {e}")
+    finally:
+        run_lock.release()
 
 # === 키위 기반 명사 추출 & 키워드 함수 ===
 def extract_nouns_kiwi(text):
@@ -203,7 +211,6 @@ def extract_keywords_kiwi(texts, top_n=5):
         "등", "이", "그", "저", "것", "수", "명", "제", "시", "때", "후", "위", "앞", "뒤",
         "중", "내", "밖", "이후", "위해", "대해", "대한", "에", "와", "과", "는", "이", "가", "을", "를",
         "로", "으로", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다", "업무", "보고"
-        # 추가 필요시 계속 보며 관리!
     ])
     all_nouns = []
     for text in texts:
