@@ -2,21 +2,18 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
-from dotenv import load_dotenv
-from sklearn.feature_extraction.text import TfidfVectorizer
+from kiwipiepy import Kiwi
 import pandas as pd
 import os
 import json
 import random
-import re
 import openai
 
 # 환경 변수 로드
+from dotenv import load_dotenv
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-
-# FastAPI 초기화
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -26,55 +23,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# TF-IDF 기반 키워드 추출 함수 (정규표현식 기반 명사 필터링)
-def extract_keywords(texts, top_n=5):
+kiwi = Kiwi()
+
+# 명사 추출 + 키워드 집계
+def extract_nouns_kiwi(text):
+    nouns = []
+    for word, pos, _, _ in kiwi.analyze(text)[0][0]:
+        if pos in ("NNG", "NNP"):
+            nouns.append(word)
+    return nouns
+
+def extract_keywords_kiwi(texts, top_n=5):
     stopwords = set([
-        "그리고", "그러나", "하지만", "또한", "등", "이", "그", "저", "것", "수",
-        "명이", "으로", "명으로", "들", "에서", "하다", "한", "대해", "있다", "대한",
-        "밝혔다", "후보는", "칠한", "지난", "있는", "주요", "로", "은", "는", "이", "가",
-        "을", "를", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다",
-        "만에", "내일", "당신의", "기사를", "동향과", "정부의"
+        "뉴스", "기자", "한국", "정부", "오늘", "제공", "관련", "보도", "사실", "통해", "위해",
+        "등", "이", "그", "저", "것", "수", "명", "제", "시", "때", "후", "위", "앞", "뒤",
+        "중", "내", "밖", "이후", "위해", "대해", "대한", "에", "와", "과", "는", "이", "가", "을", "를",
+        "로", "으로", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다"
+        # 추가 필요시 계속 보며 관리!
     ])
-
-    try:
-        # 전처리: 불용어 제거
-        tokenized = []
-        for text in texts:
-            words = re.findall(r"[가-힣]{2,}", text)
-            words = [w for w in words if w not in stopwords]
-            tokenized.append(" ".join(words))
-
-        if not any(tokenized):
-            return []
-
-        # TF-IDF 벡터라이저
-        vectorizer = TfidfVectorizer()
-        X = vectorizer.fit_transform(tokenized)
-        feature_names = vectorizer.get_feature_names_out()
-
-        # 단어별 TF-IDF 총합 및 등장 횟수 계산
-        tfidf_scores = X.sum(axis=0).A1
-        word_counts = (X > 0).sum(axis=0).A1  # 단어 등장 문서 수 (or 사용하고 싶으면 `.toarray().sum(axis=0)` 으로 전체 등장 횟수)
-
-        keywords = []
-        for idx, word in enumerate(feature_names):
-            if word not in stopwords:
-                keywords.append((word, int(word_counts[idx])))
-
-        keywords.sort(key=lambda x: x[1], reverse=True)
-        return [{"keyword": kw, "count": count} for kw, count in keywords[:top_n]]
-
-    except Exception as e:
-        print("TF-IDF 키워드 추출 오류:", e)
-        return []
+    all_nouns = []
+    for text in texts:
+        nouns = extract_nouns_kiwi(text)
+        all_nouns.extend([n for n in nouns if n not in stopwords and len(n) > 1])
+    from collections import Counter
+    counter = Counter(all_nouns)
+    return [{"keyword": w, "count": c} for w, c in counter.most_common(top_n)]
 
 @app.get("/trending-keywords")
 def get_trending_keywords():
     try:
         df = pd.read_excel("kobart_news_summarized.xlsx")
         combined = (df["title"].fillna("") + " " + df["summary"].fillna(""))
-        sampled_texts = random.sample(combined.tolist(), min(30, len(combined)))
-        keywords = extract_keywords(sampled_texts, top_n=5)
+        # **150개 전부 사용**
+        keywords = extract_keywords_kiwi(combined.tolist(), top_n=5)
         return {"keywords": keywords}
     except Exception as e:
         return {"error": str(e)}
@@ -95,7 +76,6 @@ def search_articles(keyword: str = Query(..., min_length=2)):
     except Exception as e:
         return {"error": str(e)}
 
-# ✅ 3. 결론 요약 API
 class SummaryRequest(BaseModel):
     keyword: str
     contents: List[str]
@@ -103,30 +83,43 @@ class SummaryRequest(BaseModel):
 @app.post("/summarize-conclusion")
 def summarize_conclusion(data: SummaryRequest):
     keyword = data.keyword
-    contents = data.contents[:3]
-    context = "\n".join(contents)
-
+    context = "\n".join(data.contents[:3])
     prompt = f"""
-다음은 '{keyword}'에 대한 여러 언론사의 기사 원문입니다.
+당신은 다수의 뉴스 기사를 분석해 본질적 쟁점을 도출하는 뉴스 요약 전문가입니다.
 
-이 기사들의 공통된 주제를 다음 3가지 항목으로 간결히 정리해줘.
+아래는 '{keyword}'와 관련된 여러 언론사의 기사 원문입니다.
+중복 표현/사실 나열 없이, **핵심만 간결하게** 정리해 주세요.
 
-요약 형식은 다음 JSON 형태 그대로 출력해줘:
+아래 3가지 항목을 기준으로, **각 항목을 반드시 1문장**으로 정리해 주세요.
+
+1. "fact":  
+    - 여러 기사에 반복적으로 등장하는 **가장 중요한 핵심 사실**을 명확하게,  
+    - **팩트(객관적 진술)**만 담아 요약
+
+2. "issue":  
+    - 해당 뉴스 이슈의 **주요 쟁점/갈등/논란/사회적 반향**을 요약  
+    - 언론사들의 공통적으로 주목한 **문제점이나 논쟁**을 한 문장으로 명확하게 서술
+
+3. "outlook":  
+    - 전문가 또는 언론들이 제시한 **미래 전망, 영향, 시사점**을  
+    - **비판적/통합적 관점**에서 한 문장으로 정리    
+
+**형식**
+- 아래 JSON 예시처럼, 각 항목 이름은 "fact", "issue", "outlook" 그대로, 반드시 JSON 형식으로만 답변
+- 직접 인용 없이 당신의 언어로 요약, 절대 기사 문장 그대로 복사 금지
+- 모호하거나 과장된 표현, 추측은 지양
+- 예측/전망(outlook)은 기사 내에 근거가 있을 때만 제시
+
+예시:
 {{
-  "fact": "핵심 사실을 1문장으로 요약",
-  "issue": "신문사들의 공통된 쟁점을 1문장으로 요약",
-  "outlook": "향후 전망 또는 종합 판단을 1문장으로 요약"
+  "fact": "...",
+  "issue": "...",
+  "outlook": "..."
 }}
 
-조건:
-- 각 항목은 반드시 1문장
-- 직접 인용 없이 요점을 명확히 서술
-- 항목 이름은 반드시 "fact", "issue", "outlook"만 사용
-- 반드시 JSON 형식 유지
-
-기사 원문:
+[기사 원문 모음]
 {context}
-"""
+""".strip()
 
     try:
         from openai import OpenAI
@@ -140,7 +133,6 @@ def summarize_conclusion(data: SummaryRequest):
         result = response.choices[0].message.content.strip()
         summary_json = json.loads(result)
         return {"keyword": keyword, "summary": summary_json}
-
     except Exception as e:
         print("결론 요약 오류:", e)
         return {
@@ -152,8 +144,3 @@ def summarize_conclusion(data: SummaryRequest):
                 "error": str(e)
             }
         }
-
-# uvicorn summarize_conclusion_csv:app --reload
-# 키워드: http://localhost:8000/trending-keywords
-# 본문검색: http://localhost:8000/search-articles?keyword=카카오
-# 문서화: http://localhost:8000/docs
