@@ -12,3 +12,4 @@ pandas
 apscheduler
 openai>=1.0.0
 kiwipiepy
+openpyxl
