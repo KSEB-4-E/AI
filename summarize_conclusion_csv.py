@@ -8,9 +8,8 @@ import os
 import json
 import random
 import openai
-
-# 환경 변수 로드
 from dotenv import load_dotenv
+
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -25,7 +24,6 @@ app.add_middleware(
 
 kiwi = Kiwi()
 
-# 명사 추출 + 키워드 집계
 def extract_nouns_kiwi(text):
     nouns = []
     for word, pos, _, _ in kiwi.analyze(text)[0][0]:
@@ -39,7 +37,6 @@ def extract_keywords_kiwi(texts, top_n=5):
         "등", "이", "그", "저", "것", "수", "명", "제", "시", "때", "후", "위", "앞", "뒤",
         "중", "내", "밖", "이후", "위해", "대해", "대한", "에", "와", "과", "는", "이", "가", "을", "를",
         "로", "으로", "에", "의", "와", "과", "도", "것으로", "가운데", "대통령은", "나눔의", "대통령이", "물론", "되겠다"
-        # 추가 필요시 계속 보며 관리!
     ])
     all_nouns = []
     for text in texts:
@@ -53,9 +50,12 @@ def extract_keywords_kiwi(texts, top_n=5):
 def get_trending_keywords():
     try:
         df = pd.read_excel("kobart_news_summarized.xlsx")
-        combined = (df["title"].fillna("") + " " + df["summary"].fillna(""))
-        # **150개 전부 사용**
-        keywords = extract_keywords_kiwi(combined.tolist(), top_n=5)
+        if len(df) < 50:
+            sampled = df["title"].fillna("").tolist()  # 기사 50개 미만이면 전부 사용
+        else:
+            sampled_idx = random.sample(list(df.index), 50)
+            sampled = df.loc[sampled_idx, "title"].fillna("").tolist()
+        keywords = extract_keywords_kiwi(sampled, top_n=5)
         return {"keywords": keywords}
     except Exception as e:
         return {"error": str(e)}
@@ -65,8 +65,7 @@ def search_articles(keyword: str = Query(..., min_length=2)):
     try:
         df = pd.read_excel("kobart_news_summarized.xlsx")
         filtered = df[
-            df["title"].fillna("").str.contains(keyword, case=False, regex=False) |
-            df["summary"].fillna("").str.contains(keyword, case=False, regex=False)
+            df["title"].fillna("").str.contains(keyword, case=False, regex=False)
         ].copy()
         filtered["row_order"] = filtered.index[::-1]
         latest_by_source = filtered.sort_values("row_order").drop_duplicates(subset=["source"], keep="first")
