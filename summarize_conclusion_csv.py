@@ -9,9 +9,11 @@ import json
 import random
 import openai
 from dotenv import load_dotenv
+import requests
 
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")  # .env에 반드시 추가
 
 app = FastAPI()
 app.add_middleware(
@@ -46,12 +48,39 @@ def extract_keywords_kiwi(texts, top_n=5):
     counter = Counter(all_nouns)
     return [{"keyword": w, "count": c} for w, c in counter.most_common(top_n)]
 
+def summarize_with_huggingface(text):
+    api_url = "https://api-inference.huggingface.co/models/gogamza/kobart-base-v2"
+    headers = {
+        "Authorization": f"Bearer {HF_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "inputs": text[:1024]  # 긴 본문은 자르기
+    }
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+        # summary_text, generated_text 등 결과 필드 확인
+        if isinstance(result, list):
+            if "summary_text" in result[0]:
+                return result[0]["summary_text"]
+            elif "generated_text" in result[0]:
+                return result[0]["generated_text"]
+            else:
+                return str(result[0])
+        else:
+            return "요약 결과 없음"
+    except Exception as e:
+        print("Hugging Face 요약 오류:", e)
+        return "요약 실패"
+
 @app.get("/trending-keywords")
 def get_trending_keywords():
     try:
         df = pd.read_excel("kobart_news_summarized.xlsx")
         if len(df) < 50:
-            sampled = df["title"].fillna("").tolist()  # 기사 50개 미만이면 전부 사용
+            sampled = df["title"].fillna("").tolist()
         else:
             sampled_idx = random.sample(list(df.index), 50)
             sampled = df.loc[sampled_idx, "title"].fillna("").tolist()
@@ -143,3 +172,10 @@ def summarize_conclusion(data: SummaryRequest):
                 "error": str(e)
             }
         }
+
+# ★ 추가: Hugging Face KoBART로 직접 요약하는 API 엔드포인트
+@app.post("/kobart-summarize")
+def kobart_summarize_api(req: dict):
+    text = req.get("text", "")
+    summary = summarize_with_huggingface(text)
+    return {"summary": summary}
