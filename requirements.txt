@@ -4,3 +4,4 @@ pandas
 kiwipiepy
 openai
 python-dotenv
+openpyxl
